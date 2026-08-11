@@ -48,7 +48,7 @@ which is confusing but deliberate.
 ## Setting up a machine
 
 ```powershell
-git clone https://github.com/abhi-pwer/d365-claude-setup claude-config
+git clone https://github.com/abhi-dev8789/d365-claude-setup claude-config
 cd claude-config
 powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Full
 ```
