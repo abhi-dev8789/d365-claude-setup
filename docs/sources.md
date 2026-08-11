@@ -23,6 +23,8 @@ of the same setup, so the first authoring pass used direct fetches).
 | `d365-web-resources` | [Client API form context](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/clientapi-form-context) | 2026-03-27 | 2026-03-28 |
 | `pcf-controls` | [Power Apps component framework overview](https://learn.microsoft.com/en-us/power-apps/developer/component-framework/overview) | 2026-01-09 | 2026-01-16 |
 | `d365-alm` | [Use a connection reference in a solution](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-connection-reference) | 2026-01-09 | 2026-01-09 |
+| `d365-alm` | [pac solution CLI reference](https://learn.microsoft.com/power-platform/developer/cli/reference/solution) | — | verified 2026-08-11 via Learn MCP |
+| `d365-alm` | [Pre-populate connection references and environment variables](https://learn.microsoft.com/power-platform/alm/conn-ref-env-variables-build-tools) | — | verified 2026-08-11 via Learn MCP |
 | (setup) | [Microsoft Learn MCP Server overview](https://learn.microsoft.com/en-us/training/support/mcp) | 2026-05-05 | 2026-05-22 |
 
 Specifically confirmed from those pages, not from memory:
@@ -65,7 +67,6 @@ matters.
 | `ControlManifest.Input.xml` structure, `of-type`, `usage`, `feature-usage` | `pcf-controls` | Same — overview only |
 | `pac pcf init` / `pac pcf push` flag syntax | `pcf-controls` | CLI reference not fetched |
 | Dataset paging API (`paging.loadNextPage()`, `hasNextPage`) | `pcf-controls` | Not fetched |
-| `pac solution create-settings` / `--settings-file` syntax | `d365-alm` | CLI reference not fetched. This is the most useful command in that skill — **verify it first.** |
 | `pac webresource push` flag syntax | `d365-web-resources` | CLI reference not fetched |
 | Power Platform Build Tools pipeline task names | `d365-alm` | Described at the shape level only, deliberately |
 | Environment variables blocking import when unset | `d365-alm` | Referenced by the connection reference page but not documented there directly |

@@ -78,9 +78,23 @@ environment variables can be supplied at import time from a file:
 
 ```powershell
 pac solution create-settings --solution-zip MySolution.zip --settings-file deploy-test.json
+# or, against an unpacked solution folder:
+pac solution create-settings --solution-folder ./src/MySolution --settings-file deploy-test.json
+
 # edit deploy-test.json - fill in per-environment connection ids and variable values
 pac solution import --path MySolution.zip --settings-file deploy-test.json
 ```
+
+The generated JSON has **empty values in the `ConnectionReferences` section** — those are
+connection IDs from the *target* environment and must be filled in by hand. Get a connection ID
+from make.powerapps.com → Connections → select the connection → read it out of the URL.
+
+In Azure DevOps, the Power Platform Build Tools **Import Solution** task exposes the same thing
+as the **"Use deployment settings file"** option.
+
+**Import validates connection references**: the connection placed in each reference must be
+usable by the *owner* of that connection reference, or the import fails. Same root cause as
+`ConnectionAuthorizationFailed` — either own the connections or share them.
 
 Keep one settings file per target environment in source control. **Values referencing client
 environments are environment-specific configuration — check whether they belong in the repo or

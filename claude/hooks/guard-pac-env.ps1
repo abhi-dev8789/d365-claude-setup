@@ -42,7 +42,13 @@ $DestructiveVerbs = @(
 # Without this, merely *mentioning* one of these commands (in an echo, a grep, a
 # heredoc, or documentation) trips the guard. The point is to block execution,
 # not discussion.
-$CommandStart = '(?:^|[;&|`]|\n)\s*(?:&\s*)?["'']?(?:[\w:\\/\.\- ]*[\\/])?pac(?:\.exe)?["'']?\s+'
+#
+# Backtick is deliberately NOT a separator here. It is PowerShell's line-continuation
+# character, but it is also markdown's code-span delimiter - and `pac solution import`
+# inside a commit message or doc string is vastly more common than a backtick
+# immediately preceding a real invocation. Including it produced false positives that
+# blocked ordinary git commits.
+$CommandStart = '(?:^|[;&|]|\n)\s*(?:&\s*)?["'']?(?:[\w:\\/\.\- ]*[\\/])?pac(?:\.exe)?["'']?\s+'
 $DestructivePatterns = $DestructiveVerbs | ForEach-Object { $CommandStart + $_ }
 
 function Exit-Allow { exit 0 }
