@@ -1,7 +1,22 @@
 # Manual steps
 
-`.\bootstrap.ps1 -Full` does everything scriptable: prerequisites, config projection, Learn
-MCP registration, both marketplaces, and all eight plugins.
+Start here:
+
+```powershell
+git clone https://github.com/abhi-pwer/d365-claude-setup claude-config
+cd claude-config
+powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Full
+```
+
+That does everything scriptable: prerequisites, config projection, Learn MCP registration,
+both marketplaces, and all eight plugins.
+
+**The `-ExecutionPolicy Bypass -File` form is required**, not decoration. Windows refuses
+unsigned scripts by default, so a bare `.\bootstrap.ps1` fails with *"is not digitally
+signed"* or *"running scripts is disabled on this system"*. The flag is process-scoped —
+no machine change, no admin rights.
+
+Then **restart Claude Code** so it loads the plugins and MCP server.
 
 Only three things below genuinely need a human. Run them once per machine.
 

@@ -50,8 +50,32 @@ which is confusing but deliberate.
 ```powershell
 git clone https://github.com/abhi-pwer/d365-claude-setup claude-config
 cd claude-config
-.\bootstrap.ps1 -Full
+powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Full
 ```
+
+> **Use that exact command — don't shorten it to `.\bootstrap.ps1`.** Windows blocks unsigned
+> scripts by default (`Restricted` on most client installs, `AllSigned` on managed ones), and
+> the plain form fails with *"is not digitally signed"* or *"running scripts is disabled on
+> this system"*. `-ExecutionPolicy Bypass` applies to that one process only: it changes no
+> machine setting and needs no admin rights.
+>
+> If you downloaded a **ZIP** instead of cloning, Windows also tags the files as
+> internet-sourced. Clear that first, from the repo folder:
+>
+> ```powershell
+> Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File
+> ```
+>
+> Cloning with git doesn't set that tag, so this is a ZIP-only step.
+
+### Before you start
+
+- **Claude Code installed and signed in** — the VS Code extension or the CLI, either is fine.
+  Bootstrap installs the CLI if it's missing, but it can't sign in for you.
+- **winget available** — ships with App Installer on Windows 10/11. Check with
+  `winget --version`. Without it, bootstrap can still project config and install plugins, but
+  it can't install missing tools; install those by hand from the table below.
+- **A UAC prompt or two** is normal if winget installs anything machine-scoped.
 
 That single command installs **every** missing prerequisite — pac CLI, Node, git, .NET, Azure
 CLI, Python, GitHub CLI, and the Claude Code CLI — projects the config into `~/.claude`,
