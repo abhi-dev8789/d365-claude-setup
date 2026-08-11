@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Secrets and machine-local state. NEVER commit these.
+# ---------------------------------------------------------------------------
+.credentials.json
+*.credentials.json
+**/.credentials.json
+
+# pac CLI auth profiles (contain tokens and org URLs)
+.powerapps-cli/
+**/pac/auth/
+authprofiles.json
+
+# Azure CLI
+.azure/
+
+# Environment allowlist read by hooks/guard-pac-env.ps1 - contains client org
+# identifiers by design. Machine-local, never committed.
+dev-environments.txt
+
+# ---------------------------------------------------------------------------
+# Claude Code runtime state - machine-specific, large, and not reproducible.
+# Only ./claude/** (the authored config) belongs in this repo.
+# ---------------------------------------------------------------------------
+projects/
+sessions/
+session-env/
+shell-snapshots/
+file-history/
+backups/
+ide/
+plans/
+todos/
+statsig/
+.last-cleanup
+history.jsonl
+*.jsonl
+
+# Timestamped backups written by bootstrap.ps1
+.backup-*/
+
+# ---------------------------------------------------------------------------
+# Local overrides - the point of these is that they stay on one machine.
+# ---------------------------------------------------------------------------
+settings.local.json
+**/settings.local.json
+*.local.ps1
+.env
+.env.*
+
+# ---------------------------------------------------------------------------
+# Build / editor noise
+# ---------------------------------------------------------------------------
+node_modules/
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/

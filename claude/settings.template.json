@@ -1,0 +1,87 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pac auth list:*)",
+      "Bash(pac auth who:*)",
+      "Bash(pac org list:*)",
+      "Bash(pac org who:*)",
+      "Bash(pac solution list:*)",
+      "Bash(pac solution export:*)",
+      "Bash(pac solution unpack:*)",
+      "Bash(pac solution pack:*)",
+      "Bash(pac canvas unpack:*)",
+      "Bash(pac canvas pack:*)",
+      "Bash(pac plugin init:*)",
+      "Bash(pac pcf init:*)",
+      "Bash(pac pcf version:*)",
+      "Bash(pac env list:*)",
+      "Bash(pac help:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(dotnet --version)",
+      "Bash(npm run:*)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npm ls:*)",
+      "Bash(node --version)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(az account show:*)",
+      "Bash(az --version)",
+      "PowerShell(pac auth list:*)",
+      "PowerShell(pac auth who:*)",
+      "PowerShell(pac org list:*)",
+      "PowerShell(pac solution list:*)",
+      "PowerShell(pac solution export:*)",
+      "PowerShell(pac solution unpack:*)",
+      "PowerShell(pac solution pack:*)",
+      "PowerShell(pac canvas unpack:*)",
+      "PowerShell(pac canvas pack:*)",
+      "PowerShell(dotnet build:*)",
+      "PowerShell(dotnet restore:*)",
+      "PowerShell(dotnet test:*)",
+      "PowerShell(npm run:*)",
+      "PowerShell(npm ci)",
+      "PowerShell(git status:*)",
+      "PowerShell(git diff:*)",
+      "PowerShell(git log:*)",
+      "PowerShell(az account show:*)",
+      "mcp__microsoft-learn"
+    ],
+    "ask": [
+      "Bash(pac solution import:*)",
+      "Bash(pac solution delete:*)",
+      "Bash(pac data delete:*)",
+      "Bash(pac org delete:*)",
+      "Bash(pac application install:*)",
+      "PowerShell(pac solution import:*)",
+      "PowerShell(pac solution delete:*)",
+      "PowerShell(pac data delete:*)",
+      "PowerShell(pac org delete:*)"
+    ]
+  },
+
+  "statusLine": {
+    "type": "command",
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{CLAUDE_DIR}}\\statusline.ps1\""
+  },
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"{{CLAUDE_DIR}}\\hooks\\guard-pac-env.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}
