@@ -140,6 +140,40 @@ so they're easy to raise when Microsoft moves them.
 > and tells you to turn it off under **Settings → Apps → Advanced app settings → App
 > execution aliases**.
 
+## Undoing it
+
+If someone tries this and decides they don't want it, one command reverses it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Uninstall
+```
+
+Add `-WhatIfOnly` first to see exactly what it would do without touching anything.
+
+It uninstalls the eight plugins and both marketplaces, unregisters the Learn MCP server,
+restores or deletes each config file, and removes the environment allowlist. Anything that
+was already on the machine before setup is kept — the first run records a manifest of
+pre-existing state (`~/.claude/.bootstrap-manifest.json`), so a plugin or marketplace the
+user already had is left alone.
+
+**Tools are deliberately left installed.** Node, git, pac and the rest are commonly wanted
+for other work, so silently removing them would be worse than leaving them. The uninstall
+lists exactly what it added with the command to remove each. Pass `-RemoveTools` if you
+genuinely want them gone.
+
+If the manifest is missing — setup predates it, or someone deleted it — the uninstall infers
+pre-existing state from the earliest `.backup-*` folder rather than guessing. A file captured
+there existed before the first run and is restored; a file absent from it was ours and is
+removed. With no backups either, it deletes nothing and only reports, because assuming "this
+didn't exist" would destroy a `settings.json` that was only ever merged into.
+
+Timestamped backups are kept under `~/.claude/.backup-*`. Delete them once you're satisfied.
+
+> The uninstall's decision logic is verified via `-WhatIfOnly`, including correctly restoring
+> a pre-existing `settings.json` rather than deleting it. A full destructive round-trip on a
+> real machine has not been run — so on someone else's laptop, do the `-WhatIfOnly` pass first
+> and read what it intends to do.
+
 ## Layout
 
 ```

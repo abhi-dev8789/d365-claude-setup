@@ -25,6 +25,17 @@
     Register the plugin marketplaces and install all eight plugins non-interactively
     via the claude CLI.
 
+.PARAMETER Uninstall
+    Reverse everything this script did, using the manifest of pre-existing state
+    recorded on the first run. Restores or deletes config, removes the plugins and
+    marketplaces it installed, and unregisters the Learn MCP server. Tools installed
+    via winget/npm are reported, not removed, unless -RemoveTools is also passed.
+
+.PARAMETER RemoveTools
+    With -Uninstall, also uninstall tools this script installed. Off by default:
+    Node, git and the rest are commonly wanted for other work, and silently removing
+    them would be worse than leaving them.
+
 .PARAMETER SkipMcp
     Skip registering the Microsoft Learn MCP server.
 
@@ -42,6 +53,8 @@ param(
     [switch]$Full,
     [switch]$InstallTools,
     [switch]$InstallPlugins,
+    [switch]$Uninstall,
+    [switch]$RemoveTools,
     [switch]$SyncBack,
     [switch]$SkipMcp,
     [switch]$WhatIfOnly
@@ -328,6 +341,85 @@ function Assert-RequiredTools {
         throw ("Required tools missing: {0}. " -f ($stillMissing -join ', ')) +
               "Re-run with -Full to install them automatically."
     }
+}
+
+# ---------------------------------------------------------------------------
+# First-run manifest
+#
+# Timestamped backups alone cannot drive an uninstall: they only capture files
+# that already existed. On a machine where CLAUDE.md or skills/ were never there,
+# nothing records their absence, so a restore would leave our files behind and
+# call it success. This records what the machine looked like BEFORE the first run,
+# and is written exactly once so re-runs cannot overwrite the original state.
+# ---------------------------------------------------------------------------
+$ManifestPath = Join-Path $ClaudeDir '.bootstrap-manifest.json'
+
+function Save-BootstrapManifest {
+    if (Test-Path -LiteralPath $ManifestPath) { return }   # never overwrite
+    if ($WhatIfOnly) { Write-Info 'would record a first-run manifest of pre-existing state'; return }
+
+    $pre = [ordered]@{
+        recordedAt      = (Get-Date -Format 'o')
+        claudeDirExisted = (Test-Path -LiteralPath $ClaudeDir)
+        existingFiles   = @()
+        existingDirs    = @()
+        settingsExisted = (Test-Path -LiteralPath (Join-Path $ClaudeDir 'settings.json'))
+        allowlistExisted = (Test-Path -LiteralPath (Join-Path $ClaudeDir 'dev-environments.txt'))
+        claudeJsonHadMcp = $false
+        preexistingPlugins = @()
+        preexistingMarketplaces = @()
+        toolsAlreadyPresent = @()
+        toolsWeInstalled    = @()
+    }
+
+    foreach ($f in ($ManagedFiles + @('settings.json'))) {
+        if (Test-Path -LiteralPath (Join-Path $ClaudeDir $f) -PathType Leaf) { $pre.existingFiles += $f }
+    }
+    foreach ($d in $ManagedDirs) {
+        if (Test-Path -LiteralPath (Join-Path $ClaudeDir $d) -PathType Container) { $pre.existingDirs += $d }
+    }
+
+    $cj = Join-Path $env:USERPROFILE '.claude.json'
+    if (Test-Path -LiteralPath $cj) {
+        try {
+            $parsed = Get-Content -LiteralPath $cj -Raw | ConvertFrom-Json
+            $pre.claudeJsonHadMcp = ($parsed.PSObject.Properties.Name -contains 'mcpServers')
+        } catch { }
+    }
+
+    # Anything already installed must survive the uninstall.
+    if ($script:ClaudeCli) {
+        try {
+            $listed = (& $script:ClaudeCli plugin list 2>$null | Out-String)
+            foreach ($p in $script:Plugins) {
+                if ($listed -match [regex]::Escape($p)) { $pre.preexistingPlugins += $p }
+            }
+            $mkts = (& $script:ClaudeCli plugin marketplace list 2>$null | Out-String)
+            foreach ($m in $script:Marketplaces) {
+                if ($mkts -match [regex]::Escape($m.Name)) { $pre.preexistingMarketplaces += $m.Name }
+            }
+        } catch { }
+    }
+
+    foreach ($t in @('pac','node','git','az','dotnet','gh','python','claude')) {
+        if (Get-Command $t -ErrorAction SilentlyContinue) { $pre.toolsAlreadyPresent += $t }
+    }
+
+    if (-not (Test-Path -LiteralPath $ClaudeDir)) { New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null }
+    $pre | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ManifestPath -Encoding utf8 -Force
+    Write-Ok 'recorded pre-existing state for a clean uninstall'
+}
+
+function Add-InstalledToolToManifest {
+    param([string]$Name, [string]$Kind, [string]$Id)
+    if (-not (Test-Path -LiteralPath $ManifestPath)) { return }
+    try {
+        $m = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+        $list = @($m.toolsWeInstalled) | Where-Object { $_ }
+        $list += [pscustomobject]@{ name = $Name; kind = $Kind; id = $Id }
+        $m.toolsWeInstalled = $list
+        $m | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ManifestPath -Encoding utf8 -Force
+    } catch { }
 }
 
 # ---------------------------------------------------------------------------
@@ -691,6 +783,8 @@ function Install-MissingTools {
 
         if (Test-ToolPresent -Name $t.Name) {
             Write-Ok "$($t.Name)"
+            # Record it so -Uninstall can offer to remove exactly what we added.
+            Add-InstalledToolToManifest -Name $t.Name -Kind $t.Kind -Id $t.Id
         } elseif ($t.Required) {
             Write-Bad "$($t.Name) - REQUIRED and not usable after install"
         } else {
@@ -848,6 +942,204 @@ function New-DevEnvironmentsFile {
 }
 
 # ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+function Invoke-Uninstall {
+    Write-Step 'Uninstall'
+
+    $m = $null
+    if (Test-Path -LiteralPath $ManifestPath) {
+        try { $m = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json } catch { }
+    }
+
+    $prePlugins = @(); $preMarkets = @(); $preFiles = @(); $preDirs = @()
+    $settingsExisted = $false; $allowlistExisted = $false; $claudeDirExisted = $true; $hadMcp = $false
+
+    if (-not $m) {
+        # No manifest (setup predates it, or it was deleted). Infer pre-existing state
+        # from the earliest backup instead of assuming: a file captured there existed
+        # before the first run. Assuming "did not exist" would delete a settings.json
+        # that was only ever merged into - unrecoverable, and the worst outcome here.
+        Write-Warn 'No first-run manifest - inferring pre-existing state from the earliest backup.'
+
+        $b0 = Get-ChildItem $ClaudeDir -Directory -Filter '.backup-*' -Force -ErrorAction SilentlyContinue |
+              Sort-Object Name | Select-Object -First 1
+        if ($b0) {
+            Write-Info "  using $($b0.Name)"
+            foreach ($f in ($ManagedFiles + @('settings.json'))) {
+                if (Test-Path -LiteralPath (Join-Path $b0.FullName $f)) { $preFiles += $f }
+            }
+            foreach ($d in $ManagedDirs) {
+                if (Test-Path -LiteralPath (Join-Path $b0.FullName $d)) { $preDirs += $d }
+            }
+            $settingsExisted = ($preFiles -contains 'settings.json')
+        } else {
+            Write-Warn '  no backups either - nothing will be deleted, only reported.'
+            Write-Info '  Remove files under ~/.claude by hand once you have checked them.'
+            $preFiles = @($ManagedFiles) + @('settings.json')
+            $preDirs  = @($ManagedDirs)
+            $settingsExisted = $true
+        }
+    }
+
+    if ($m) {
+        $prePlugins      = @($m.preexistingPlugins)      | Where-Object { $_ }
+        $preMarkets      = @($m.preexistingMarketplaces) | Where-Object { $_ }
+        $preFiles        = @($m.existingFiles)           | Where-Object { $_ }
+        $preDirs         = @($m.existingDirs)            | Where-Object { $_ }
+        $settingsExisted = [bool]$m.settingsExisted
+        $allowlistExisted= [bool]$m.allowlistExisted
+        $claudeDirExisted= [bool]$m.claudeDirExisted
+        $hadMcp          = [bool]$m.claudeJsonHadMcp
+    }
+
+    # --- plugins and marketplaces -------------------------------------------
+    Write-Host ''
+    Write-Info 'Plugins:'
+    $cli = Resolve-ClaudeCli
+    if (-not $cli) {
+        Write-Warn '  claude CLI not available - remove plugins by hand with /plugin'
+    } else {
+        foreach ($p in $script:Plugins) {
+            if ($prePlugins -contains $p) { Write-Info "  keeping $p (was already installed)"; continue }
+            if ($WhatIfOnly) { Write-Info "  would uninstall $p"; continue }
+            & $cli plugin uninstall $p --scope user 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "  removed $p" } else { Write-Warn "  $p (exit $LASTEXITCODE - may already be gone)" }
+        }
+        foreach ($mk in $script:Marketplaces) {
+            if ($preMarkets -contains $mk.Name) { Write-Info "  keeping marketplace $($mk.Name) (pre-existing)"; continue }
+            if ($WhatIfOnly) { Write-Info "  would remove marketplace $($mk.Name)"; continue }
+            & $cli plugin marketplace remove $mk.Name 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Ok "  removed marketplace $($mk.Name)" } else { Write-Warn "  marketplace $($mk.Name) (exit $LASTEXITCODE)" }
+        }
+    }
+
+    # --- Learn MCP -----------------------------------------------------------
+    Write-Host ''
+    Write-Info 'Microsoft Learn MCP server:'
+    if ($WhatIfOnly) {
+        Write-Info '  would unregister microsoft-learn'
+    } elseif ($cli) {
+        & $cli mcp remove microsoft-learn --scope user 2>&1 | Out-Null
+        Write-Ok '  unregistered microsoft-learn'
+    } else {
+        $cj = Join-Path $env:USERPROFILE '.claude.json'
+        $bak = Get-ChildItem $env:USERPROFILE -Filter '.claude.json.bak-*' -Force -ErrorAction SilentlyContinue |
+               Sort-Object Name | Select-Object -First 1
+        if ($bak -and -not $hadMcp) {
+            Copy-Item -LiteralPath $bak.FullName -Destination $cj -Force
+            Write-Ok "  restored ~/.claude.json from $($bak.Name)"
+        } else {
+            Write-Warn '  remove the "microsoft-learn" entry from ~/.claude.json by hand'
+        }
+    }
+
+    # --- config files --------------------------------------------------------
+    Write-Host ''
+    Write-Info 'Config files:'
+
+    # The earliest backup holds the pre-existing copies, if any.
+    $firstBackup = Get-ChildItem $ClaudeDir -Directory -Filter '.backup-*' -Force -ErrorAction SilentlyContinue |
+                   Sort-Object Name | Select-Object -First 1
+
+    foreach ($f in $ManagedFiles) {
+        $dst = Join-Path $ClaudeDir $f
+        if (-not (Test-Path -LiteralPath $dst)) { continue }
+        if ($preFiles -contains $f) {
+            $src = if ($firstBackup) { Join-Path $firstBackup.FullName $f } else { $null }
+            if ($src -and (Test-Path -LiteralPath $src)) {
+                if ($WhatIfOnly) { Write-Info "  would restore $f from backup" }
+                else { Copy-Item -LiteralPath $src -Destination $dst -Force; Write-Ok "  restored $f" }
+            } else { Write-Warn "  $f pre-existed but no backup copy found - left in place" }
+        } else {
+            if ($WhatIfOnly) { Write-Info "  would delete $f (did not exist before)" }
+            else { Remove-Item -LiteralPath $dst -Force; Write-Ok "  deleted $f" }
+        }
+    }
+
+    foreach ($d in $ManagedDirs) {
+        $dst = Join-Path $ClaudeDir $d
+        if (-not (Test-Path -LiteralPath $dst)) { continue }
+        if ($preDirs -contains $d) {
+            Write-Warn "  $d/ pre-existed - left in place; restore from $($firstBackup.Name) if needed"
+        } else {
+            if ($WhatIfOnly) { Write-Info "  would delete $d/ (did not exist before)" }
+            else { Remove-Item -LiteralPath $dst -Recurse -Force; Write-Ok "  deleted $d/" }
+        }
+    }
+
+    # settings.json: restore the original, or remove it if we created it.
+    $settingsPath = Join-Path $ClaudeDir 'settings.json'
+    if (Test-Path -LiteralPath $settingsPath) {
+        if ($settingsExisted) {
+            $src = if ($firstBackup) { Join-Path $firstBackup.FullName 'settings.json' } else { $null }
+            if ($src -and (Test-Path -LiteralPath $src)) {
+                if ($WhatIfOnly) { Write-Info '  would restore settings.json from backup' }
+                else { Copy-Item -LiteralPath $src -Destination $settingsPath -Force; Write-Ok '  restored settings.json' }
+            } else { Write-Warn '  settings.json pre-existed but no backup found - left in place' }
+        } else {
+            if ($WhatIfOnly) { Write-Info '  would delete settings.json (did not exist before)' }
+            else { Remove-Item -LiteralPath $settingsPath -Force; Write-Ok '  deleted settings.json' }
+        }
+    }
+
+    # allowlist: ours unless it pre-existed. Contains client identifiers, so removing
+    # it is the polite default on someone else's machine.
+    $allow = Join-Path $ClaudeDir 'dev-environments.txt'
+    if ((Test-Path -LiteralPath $allow) -and -not $allowlistExisted) {
+        if ($WhatIfOnly) { Write-Info '  would delete dev-environments.txt' }
+        else { Remove-Item -LiteralPath $allow -Force; Write-Ok '  deleted dev-environments.txt' }
+    }
+
+    # --- tools ---------------------------------------------------------------
+    Write-Host ''
+    Write-Info 'Tools:'
+    $installed = @()
+    if ($m -and $m.PSObject.Properties.Name -contains 'toolsWeInstalled') {
+        $installed = @($m.toolsWeInstalled) | Where-Object { $_ }
+    }
+
+    if ($installed.Count -eq 0) {
+        Write-Info '  none were installed by this script'
+    } elseif (-not $RemoveTools) {
+        Write-Warn "  $($installed.Count) tool(s) were installed and are being LEFT IN PLACE:"
+        foreach ($t in $installed) {
+            $cmd = if ($t.kind -eq 'npm') { "npm uninstall -g $($t.id)" } else { "winget uninstall --id $($t.id)" }
+            Write-Info "    $($t.name)  ->  $cmd"
+        }
+        Write-Info '  Re-run with -Uninstall -RemoveTools to remove them automatically.'
+        Write-Info '  Left by default because Node, git and similar are usually wanted anyway.'
+    } else {
+        foreach ($t in $installed) {
+            if ($WhatIfOnly) { Write-Info "  would uninstall $($t.name)"; continue }
+            if ($t.kind -eq 'npm') { & npm uninstall -g $t.id 2>&1 | Out-Null }
+            else { & winget uninstall --id $t.id --disable-interactivity 2>&1 | Out-Null }
+            Write-Ok "  uninstalled $($t.name)"
+        }
+    }
+
+    # --- manifest and directory ---------------------------------------------
+    if (-not $WhatIfOnly -and (Test-Path -LiteralPath $ManifestPath)) {
+        Remove-Item -LiteralPath $ManifestPath -Force
+    }
+
+    Write-Host ''
+    if (-not $claudeDirExisted) {
+        Write-Warn "~/.claude did not exist before setup."
+        Write-Info "  Backups and Claude Code's own state still live there. Once you've confirmed"
+        Write-Info "  nothing is needed, remove the whole folder:"
+        Write-Info "    Remove-Item '$ClaudeDir' -Recurse -Force"
+    } else {
+        Write-Info "Timestamped backups are still under $ClaudeDir (.backup-*)."
+        Write-Info 'Delete them once you are satisfied the rollback is correct.'
+    }
+
+    Write-Host ''
+    Write-Host 'Uninstall complete. Restart Claude Code to unload plugins and the MCP server.' -ForegroundColor Green
+    Write-Host ''
+}
+
+# ---------------------------------------------------------------------------
 # Manual steps - what genuinely cannot be scripted.
 # ---------------------------------------------------------------------------
 function Show-ManualSteps {
@@ -890,6 +1182,15 @@ if ($SyncBack) {
 }
 
 Invoke-Preflight
+
+if ($Uninstall) {
+    Invoke-Uninstall
+    return
+}
+
+# Must run before anything is changed, and only writes on the very first run.
+Write-Step 'Recording pre-existing state'
+Save-BootstrapManifest
 
 if ($InstallTools) {
     Write-Step 'Installing missing tools'
