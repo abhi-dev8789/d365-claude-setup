@@ -129,26 +129,33 @@ if (-not (Test-Path -LiteralPath $AllowlistFile)) {
     Exit-Block @"
 BLOCKED: '$matched' targeting $target (from $source).
 
-No environment allowlist exists yet, so no environment is trusted for destructive
-operations. This is a one-time setup step.
+No environment allowlist exists, so nothing is trusted for destructive operations.
 
-Create $AllowlistFile with one substring per line matching each environment that is
-safe to write to, for example:
+Run bootstrap.ps1 to generate $AllowlistFile pre-filled with this machine's pac auth
+profiles, every line commented out. Then ask the user which to uncomment.
 
-    contoso-dev
-    myclient-uat
-    org12345678
-
-Lines starting with # are ignored. This file is gitignored - client URLs stay on
-this machine and never reach the repo.
-
-Ask the user which environments belong in it. Do not create it unilaterally.
+You may create or scaffold that file. You must NOT uncomment or add an entry yourself -
+that is the user's decision, and a guard the agent can widen protects nothing.
 "@
 }
 
-$entries = Get-Content -LiteralPath $AllowlistFile |
-           ForEach-Object { $_.Trim() } |
-           Where-Object { $_ -and -not $_.StartsWith('#') }
+$entries = @(Get-Content -LiteralPath $AllowlistFile |
+             ForEach-Object { $_.Trim() } |
+             Where-Object { $_ -and -not $_.StartsWith('#') })
+
+if ($entries.Count -eq 0) {
+    Exit-Block @"
+BLOCKED: '$matched' targeting $target (from $source).
+
+$AllowlistFile exists, but every line is commented out - so no environment is trusted
+yet. This is the expected state right after setup, not a broken install.
+
+That file already lists the pac auth profiles found on this machine. Removing the
+leading '#' from a line trusts that environment.
+
+Ask the user which lines to uncomment. Do not uncomment any yourself.
+"@
+}
 
 foreach ($entry in $entries) {
     if ($target -like "*$entry*") { Exit-Allow }

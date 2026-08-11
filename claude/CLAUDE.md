@@ -94,12 +94,17 @@ Working with unpacked Canvas sources via `pac canvas unpack` / `pac canvas pack`
 
 A status line shows the active Dataverse environment on every prompt, and a `PreToolUse` hook
 blocks destructive `pac` commands aimed at environments not listed in
-`~/.claude/dev-environments.txt`.
+`~/.claude/dev-environments.txt`. `bootstrap.ps1` generates that file pre-filled with the
+machine's `pac auth` profiles, every line commented out.
 
-If that hook blocks you: **do not add entries to the allowlist yourself, and do not work around
-it.** Tell the user which environment is about to be modified and let them decide. Work spans
-multiple client tenants; the guard exists because the active auth profile is otherwise
-invisible.
+The line to hold: **creating or scaffolding that file is fine — uncommenting or adding an entry
+is not.** Choosing which environments are safe is the user's decision. A guard the agent can
+widen protects nothing.
+
+So if the hook blocks you: name the environment that was about to be modified, say which line
+in the allowlist would permit it, and let the user decide. Do not edit it yourself and do not
+route around the hook. Work spans multiple client tenants; the guard exists because the active
+auth profile is otherwise invisible.
 
 ---
 

@@ -66,25 +66,40 @@ Entra browser sign-in. No client secrets, nothing stored in plaintext by us.
 Switch environments later with `pac auth select --index N`. The status line shows which is
 active — check it before any write.
 
-## 3. Declare your safe environments — needs you
+## 3. Uncomment your safe environments — needs you
 
-The `PreToolUse` hook blocks destructive `pac` commands against environments you haven't
-declared. Create `~/.claude/dev-environments.txt` with one substring per line:
+`bootstrap.ps1` already wrote `~/.claude/dev-environments.txt`, pre-filled with the `pac auth`
+profiles it found on this machine — **every line commented out**:
 
 ```
-# Environments safe for destructive operations (import, delete, push).
-# Matched as substrings against the target org URL.
-myorg-dev
-myclient-uat
+# --- pac auth profiles found on this machine ---
+# Uncomment the ones that are safe to write to:
+
+# contoso-dev                 # https://contoso-dev.crm8.dynamics.com
+# contoso-prod                # https://contoso-prod.crm8.dynamics.com
 ```
 
-Gitignored by design — client identifiers stay on the machine.
+Open it and delete the leading `#` on each environment that is safe for destructive
+operations. That is the whole step. Gitignored by design — client identifiers stay on the
+machine.
 
-Leave production out. When the hook fires on a prod target, that's it working.
+**Leave production commented.** When the hook fires on a prod target, that's it working.
 
-Bootstrap prints the `pac auth` profiles it finds, so this is usually copy-paste. It won't
-write the file for you — the same rule applies to Claude, per `CLAUDE.md`. A guard that the
-thing being guarded can widen is not a guard.
+If you ran bootstrap before `pac auth create`, the file has no profiles yet — re-run it
+afterwards and it will list them.
+
+### Why bootstrap writes the file but won't uncomment a line
+
+Two separable things, and only one is a security decision:
+
+- **Creating the file** is scaffolding. It authorizes nothing, so automating it just saves you
+  from authoring a format you have never seen.
+- **Choosing which environments to trust** is exactly what the guard exists to protect. If the
+  tooling — or Claude — could widen the allowlist, the guard would be self-authorizing and
+  worth nothing.
+
+So bootstrap writes it fully commented, and the same rule binds Claude via `CLAUDE.md`. Nothing
+is trusted until a human removes a `#`.
 
 ## 4. Run the per-plugin setup — needs you
 

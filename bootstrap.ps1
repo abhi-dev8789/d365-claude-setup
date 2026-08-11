@@ -757,37 +757,83 @@ function Install-Plugins {
 # ---------------------------------------------------------------------------
 # Environment allowlist
 #
-# Deliberately interactive. The guard hook is pointless if it can be widened
-# without a human deciding which environments are safe to write to.
+# Two separable things, and only one of them belongs to the user:
+#   - deciding which environments are safe to write to  -> the user's call,
+#     because a guard the tooling can widen authorizes nothing
+#   - creating the file                                 -> pure scaffolding
+#
+# So write the file, pre-filled with discovered pac profiles, every line
+# commented out. Nothing is trusted until a human removes a '#', which keeps
+# the fail-safe intact while reducing the work to editing one character.
 # ---------------------------------------------------------------------------
 function New-DevEnvironmentsFile {
     $path = Join-Path $ClaudeDir 'dev-environments.txt'
 
     if (Test-Path -LiteralPath $path) {
-        $n = (Get-Content -LiteralPath $path | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') } | Measure-Object).Count
-        Write-Ok "allowlist exists ($n entries)"
+        $active = @(Get-Content -LiteralPath $path |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ -and -not $_.StartsWith('#') })
+        if ($active.Count -gt 0) {
+            Write-Ok "allowlist has $($active.Count) active entr$(if ($active.Count -eq 1) { 'y' } else { 'ies' }): $($active -join ', ')"
+        } else {
+            Write-Warn 'allowlist exists but every line is commented out - nothing is trusted yet'
+            Write-Info "       uncomment the environments you want in $path"
+        }
         return
     }
 
-    Write-Warn 'No environment allowlist - destructive pac commands are all blocked.'
-
     $profiles = @()
     try {
-        $profiles = & pac auth list 2>$null |
-                    Select-String -Pattern '(https://[a-zA-Z0-9\-]+\.[a-zA-Z0-9\.\-]*dynamics\.com)' -AllMatches |
-                    ForEach-Object { $_.Matches[0].Groups[1].Value } |
-                    Sort-Object -Unique
+        $profiles = @(& pac auth list 2>$null |
+                      Select-String -Pattern '(https://[a-zA-Z0-9\-]+\.[a-zA-Z0-9\.\-]*dynamics\.com)' -AllMatches |
+                      ForEach-Object { $_.Matches[0].Groups[1].Value } |
+                      Sort-Object -Unique)
     } catch { }
 
-    if ($profiles) {
-        Write-Info 'pac auth profiles found on this machine:'
-        foreach ($p in $profiles) { Write-Info "    $p" }
+    if ($WhatIfOnly) {
+        Write-Info "would write $path with $($profiles.Count) discovered profile(s), all commented out"
+        return
     }
 
-    Write-Info ''
-    Write-Info "Create $path with one substring per line for each environment that is"
-    Write-Info 'safe for destructive operations (import, delete, push). Leave production out.'
-    Write-Info 'This file is gitignored - client identifiers stay on this machine.'
+    $lines = @(
+        '# Environments safe for DESTRUCTIVE pac operations (import, delete, push).',
+        '#',
+        '# Matched as substrings against the target org URL. Uncomment a line to trust',
+        '# that environment. Anything not listed here is treated as production and',
+        '# blocked by ~/.claude/hooks/guard-pac-env.ps1.',
+        '#',
+        '# Leave production commented out. That is the entire point of the file.',
+        '#',
+        '# This file is gitignored - client identifiers stay on this machine.',
+        ''
+    )
+
+    if ($profiles.Count -gt 0) {
+        $lines += '# --- pac auth profiles found on this machine ---'
+        $lines += '# Uncomment the ones that are safe to write to:'
+        $lines += ''
+        foreach ($p in $profiles) {
+            # Use the org host as the match token - shorter and stable across URL forms.
+            $token = if ($p -match 'https://([a-zA-Z0-9\-]+)\.') { $Matches[1] } else { $p }
+            $lines += "# $token".PadRight(28) + "  # $p"
+        }
+    } else {
+        $lines += '# No pac auth profiles found yet. After `pac auth create`, re-run'
+        $lines += '# bootstrap.ps1 and it will list your environments here.'
+        $lines += '#'
+        $lines += '# Example:'
+        $lines += '#   contoso-dev'
+        $lines += '#   myclient-uat'
+    }
+    $lines += ''
+
+    $lines | Out-File -LiteralPath $path -Encoding utf8 -Force
+
+    Write-Ok "wrote $path"
+    if ($profiles.Count -gt 0) {
+        Write-Info "listed $($profiles.Count) discovered environment(s), all commented out"
+    }
+    Write-Warn 'Nothing is trusted until you uncomment a line - destructive pac commands stay blocked.'
 }
 
 # ---------------------------------------------------------------------------
@@ -805,8 +851,9 @@ function Show-ManualSteps {
     Write-Host '       /configure-canvas-mcp   (canvas-apps: authoring MCP server)' -ForegroundColor Cyan
     Write-Host '       ask Claude to run the power-automate setup skill' -ForegroundColor Cyan
     Write-Host ''
-    Write-Host '  3. Create the environment allowlist if you have not yet:' -ForegroundColor White
+    Write-Host '  3. Uncomment your safe environments (the file is already written for you):' -ForegroundColor White
     Write-Host "       $ClaudeDir\dev-environments.txt" -ForegroundColor Cyan
+    Write-Host '       Every line starts commented out - nothing is trusted until you edit it.' -ForegroundColor Gray
     Write-Host ''
     Write-Host '  Restart Claude Code to pick up plugins and the MCP server.' -ForegroundColor Gray
     Write-Host '  Full detail: docs/manual-steps.md' -ForegroundColor Gray
