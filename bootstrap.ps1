@@ -106,6 +106,26 @@ function Resolve-GhCli {
     return (Resolve-Exe -Name 'gh' -Candidates @("$env:ProgramFiles\GitHub CLI\gh.exe"))
 }
 
+function Get-LatestPythonPackageId {
+    <#
+        winget has no version-agnostic 'Python.Python.3' id - every package is pinned to a
+        minor version (3.12, 3.13, 3.14...). Hardcoding one means this script installs an
+        increasingly stale Python as the years pass, so discover the newest instead.
+        Falls back to a known-good id only if discovery fails (offline, winget missing).
+    #>
+    $fallback = 'Python.Python.3.12'
+
+    try {
+        $out = & winget search --id Python.Python.3 --source winget 2>$null | Out-String
+        $versions = [regex]::Matches($out, 'Python\.Python\.3\.(\d+)') |
+                    ForEach-Object { [int]$_.Groups[1].Value } |
+                    Sort-Object -Unique
+        if ($versions) { return "Python.Python.3.$($versions[-1])" }
+    } catch { }
+
+    return $fallback
+}
+
 function Resolve-RealPython {
     # The Windows Store 'python' alias is a stub that resolves on PATH, prints nothing,
     # and shadows a real install. Look for an actual interpreter, ignoring WindowsApps.
@@ -238,9 +258,10 @@ function Invoke-Preflight {
             Write-Info '       toggle OFF python.exe and python3.exe'
         }
     } else {
+        $pyId = Get-LatestPythonPackageId
         Write-Warn 'Python 3 not found - needed by the Dataverse plugin dv-connect'
-        Write-Info '       install: winget install Python.Python.3.12'
-        $script:Optional += @{ Name = 'Python 3'; Kind = 'winget'; Id = 'Python.Python.3.12' }
+        Write-Info "       install: winget install $pyId"
+        $script:Optional += @{ Name = 'Python 3'; Kind = 'winget'; Id = $pyId }
     }
 
     if (Resolve-GhCli) {
@@ -251,20 +272,25 @@ function Invoke-Preflight {
         $script:Optional += @{ Name = 'GitHub CLI'; Kind = 'winget'; Id = 'GitHub.cli' }
     }
 
-    # .NET 10 specifically - canvas-apps will not run without it.
+    # canvas-apps documents .NET 10 as its minimum. Test for >= that major version rather
+    # than an exact match, so a machine with only .NET 11 isn't told .NET is missing.
+    $dotnetMinMajor = 10
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
     if ($dotnet) {
-        $sdks = & dotnet --list-sdks 2>$null
-        $has10 = $sdks | Where-Object { $_ -match '^10\.' }
-        if ($has10) {
-            Write-Ok ".NET SDK 10 ($(($has10 | Select-Object -First 1) -split ' ' | Select-Object -First 1))"
+        $majors = & dotnet --list-sdks 2>$null |
+                  ForEach-Object { if ($_ -match '^(\d+)\.') { [int]$Matches[1] } } |
+                  Sort-Object -Unique
+        $best = $majors | Where-Object { $_ -ge $dotnetMinMajor } | Select-Object -Last 1
+        if ($best) {
+            Write-Ok ".NET SDK $best (canvas-apps needs >= $dotnetMinMajor)"
         } else {
-            Write-Warn ".NET SDK 10 not found - canvas-apps plugin requires it"
-            Write-Info "       install: winget install Microsoft.DotNet.SDK.10"
+            $have = if ($majors) { ($majors -join ', ') } else { 'none' }
+            Write-Warn ".NET SDK >= $dotnetMinMajor not found (have: $have) - canvas-apps requires it"
+            Write-Info "       install: winget install Microsoft.DotNet.SDK.$dotnetMinMajor"
         }
     } else {
-        Write-Warn ".NET SDK not found - canvas-apps plugin requires .NET 10"
-        Write-Info "       install: winget install Microsoft.DotNet.SDK.10"
+        Write-Warn ".NET SDK not found - canvas-apps requires >= $dotnetMinMajor"
+        Write-Info "       install: winget install Microsoft.DotNet.SDK.$dotnetMinMajor"
     }
 
     if ($missing.Count -gt 0) {

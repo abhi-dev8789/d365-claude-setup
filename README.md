@@ -25,6 +25,26 @@ This repo fixes that at the configuration layer:
 - **A safety net** — statusline and a pre-flight hook — so a schema change never lands in the
   wrong client's environment unnoticed.
 
+## Requirements and access
+
+**Windows only.** `bootstrap.ps1` is PowerShell and installs via `winget`; the hook and status
+line are `.ps1`. The *content* — `CLAUDE.md`, the four skills, the plugin list — is
+platform-neutral, so a macOS or Linux user can copy `claude/` into `~/.claude` by hand and run
+the `claude plugin install` lines from `docs/manual-steps.md`. Only the automation is
+Windows-bound.
+
+**The repo is private**, so cloning needs access. Which route depends on who is setting up:
+
+| Who | How they get access |
+|---|---|
+| **You, on a new machine** | Sign in to GitHub as the repo owner. Git Credential Manager (bundled with Git for Windows) prompts on first clone and stores the token. Or run `gh auth login` first. |
+| **A teammate** | Add them on GitHub → repo **Settings → Collaborators**. They then clone normally with their own credentials. |
+| **No GitHub access at all** | Download the repo as a ZIP from the web UI, extract, and run `bootstrap.ps1 -Full`. Nothing in the setup requires git at runtime — git is only how the repo travels. |
+
+If a clone fails with `Authentication failed` or `repository not found`, it's almost always
+access rather than a bad URL — a private repo returns "not found" to anyone without permission,
+which is confusing but deliberate.
+
 ## Setting up a machine
 
 ```powershell
@@ -63,13 +83,21 @@ Restart Claude Code afterwards to load the plugins and MCP server.
 | Tool | Needed for | Auto | Install |
 |---|---|---|---|
 | Claude Code CLI | plugin install, MCP registration | ✓ | `npm install -g @anthropic-ai/claude-code` |
-| Python 3 | Dataverse plugin `dv-connect` | ✓ | `winget install Python.Python.3.12` |
+| Python 3 | Dataverse plugin `dv-connect` | ✓ | newest `Python.Python.3.*` winget offers |
 | GitHub CLI | pushing this repo | ✓ | `winget install GitHub.cli` |
 | pac CLI ≥ 2.7 | all Power Platform plugins | | `winget install Microsoft.PowerPlatformCLI` |
-| .NET SDK 10 | canvas-apps plugin | | `winget install Microsoft.DotNet.SDK.10` |
+| .NET SDK ≥ 10 | canvas-apps plugin | | `winget install Microsoft.DotNet.SDK.10` |
 | Node.js ≥ 18 | code apps, FlowAgent MCP | | `winget install OpenJS.NodeJS.LTS` |
 | Azure CLI | Dataverse Web API auth, FlowAgent | | `winget install Microsoft.AzureCLI` |
-| git | this repo | | `winget install Git.Git` |
+| git | cloning this repo | | `winget install Git.Git` |
+
+**On version pinning.** No Python version is hardcoded. winget has no version-agnostic
+`Python.Python.3` id, so `bootstrap.ps1` queries winget and installs the newest `3.x` it
+offers, falling back to a pin only if the query fails. Version checks are minimums (`>=`), not
+exact matches, so newer releases satisfy them: a machine with .NET 11 and no .NET 10 passes.
+The two real floors — pac ≥ 2.7 for `model-apps`, .NET ≥ 10 for `canvas-apps` — come from
+Microsoft's own plugin docs and are declared as named constants near the top of the preflight
+so they're easy to raise when Microsoft moves them.
 
 > **Windows gotcha:** installing Python isn't always enough. The Store's *App execution
 > alias* for `python.exe` shadows a real install on `PATH`. `bootstrap.ps1` detects this
