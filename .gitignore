@@ -39,6 +39,12 @@ history.jsonl
 .backup-*/
 
 # ---------------------------------------------------------------------------
+# Working notes - deliberately local. See the note at the top of LEARNINGS.md
+# about the trade-off: it does not travel to a new machine with the repo.
+# ---------------------------------------------------------------------------
+LEARNINGS.md
+
+# ---------------------------------------------------------------------------
 # Local overrides - the point of these is that they stay on one machine.
 # ---------------------------------------------------------------------------
 settings.local.json
