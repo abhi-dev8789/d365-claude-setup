@@ -415,7 +415,9 @@ function Add-InstalledToolToManifest {
     if (-not (Test-Path -LiteralPath $ManifestPath)) { return }
     try {
         $m = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-        $list = @($m.toolsWeInstalled) | Where-Object { $_ }
+        # Outer @() is required: a Where-Object that filters everything out yields
+        # $null, not an empty array, and $null.Count throws under StrictMode.
+        $list = @(@($m.toolsWeInstalled) | Where-Object { $_ })
         $list += [pscustomobject]@{ name = $Name; kind = $Kind; id = $Id }
         $m.toolsWeInstalled = $list
         $m | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ManifestPath -Encoding utf8 -Force
@@ -1077,10 +1079,12 @@ function Invoke-Uninstall {
     }
 
     if ($m) {
-        $prePlugins      = @($m.preexistingPlugins)      | Where-Object { $_ }
-        $preMarkets      = @($m.preexistingMarketplaces) | Where-Object { $_ }
-        $preFiles        = @($m.existingFiles)           | Where-Object { $_ }
-        $preDirs         = @($m.existingDirs)            | Where-Object { $_ }
+        # Each needs an outer @(): Where-Object returns $null when it filters
+        # everything out, and these are later used with .Count and -contains.
+        $prePlugins      = @(@($m.preexistingPlugins)      | Where-Object { $_ })
+        $preMarkets      = @(@($m.preexistingMarketplaces) | Where-Object { $_ })
+        $preFiles        = @(@($m.existingFiles)           | Where-Object { $_ })
+        $preDirs         = @(@($m.existingDirs)            | Where-Object { $_ })
         $settingsExisted = [bool]$m.settingsExisted
         $allowlistExisted= [bool]$m.allowlistExisted
         $claudeDirExisted= [bool]$m.claudeDirExisted
@@ -1257,7 +1261,7 @@ function Invoke-Uninstall {
     Write-Info 'Tools:'
     $installed = @()
     if ($m -and $m.PSObject.Properties.Name -contains 'toolsWeInstalled') {
-        $installed = @($m.toolsWeInstalled) | Where-Object { $_ }
+        $installed = @(@($m.toolsWeInstalled) | Where-Object { $_ })
     }
 
     if ($installed.Count -eq 0) {
