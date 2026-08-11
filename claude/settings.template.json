@@ -1,4 +1,24 @@
 {
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+    },
+    "power-platform-skills": {
+      "source": { "source": "github", "repo": "microsoft/power-platform-skills" }
+    }
+  },
+
+  "enabledPlugins": {
+    "dataverse@claude-plugins-official": true,
+    "model-apps@power-platform-skills": true,
+    "power-automate@power-platform-skills": true,
+    "canvas-apps@power-platform-skills": true,
+    "power-pages@power-platform-skills": true,
+    "code-apps-preview@power-platform-skills": true,
+    "mobile-app@power-platform-skills": true,
+    "mcp-apps@power-platform-skills": true
+  },
+
   "permissions": {
     "allow": [
       "Bash(pac auth list:*)",

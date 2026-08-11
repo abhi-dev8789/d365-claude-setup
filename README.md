@@ -28,35 +28,53 @@ This repo fixes that at the configuration layer:
 ## Setting up a machine
 
 ```powershell
-git clone <this-repo> claude-config
+git clone https://github.com/abhi-pwer/d365-claude-setup claude-config
 cd claude-config
-.\bootstrap.ps1
+.\bootstrap.ps1 -Full
 ```
 
-Then run the `/plugin` commands it prints (see [docs/manual-steps.md](docs/manual-steps.md) —
-slash commands are interactive and cannot be scripted), and authenticate:
+That single command installs any missing prerequisites, projects the config into
+`~/.claude`, registers the Microsoft Learn MCP server, adds both plugin marketplaces, and
+installs all eight plugins — then verifies each step rather than trusting exit codes.
 
-```powershell
-pac auth create --environment <your-dev-env-url>
-```
+It is idempotent. Re-run it any time; it backs up whatever it is about to replace and
+**merges** into `settings.json` rather than overwriting, so machine-local settings survive.
 
-`bootstrap.ps1` is idempotent — re-run it any time. It backs up whatever it is about to
-replace, and **merges** into `settings.json` rather than overwriting, so machine-local
-settings survive.
+Run it without `-Full` to project config only and report missing tools without installing
+anything. `-WhatIfOnly` shows what would change and writes nothing.
+
+### What still needs a human
+
+Three things genuinely can't be scripted:
+
+1. **`pac auth create --environment <url>`** — Entra sign-in, opens a browser.
+2. **Per-plugin setup**, inside a Claude Code session: `dv-connect`,
+   `/configure-canvas-mcp`, and the power-automate `setup` skill.
+3. **`~/.claude/dev-environments.txt`** — which environments are safe to write to is a
+   judgement call, and a guard that a script can widen isn't a guard. `bootstrap.ps1`
+   lists your `pac auth` profiles to make it a copy-paste job.
+
+Restart Claude Code afterwards to load the plugins and MCP server.
 
 ### Prerequisites
 
-Checked by `bootstrap.ps1`, which reports what's missing rather than installing it silently.
+`bootstrap.ps1 -Full` installs the ones marked ✓. The rest are reported if missing.
 
-| Tool | Needed for | Install |
-|---|---|---|
-| Claude Code | everything | — |
-| pac CLI ≥ 2.7 | all Power Platform plugins | `winget install Microsoft.PowerPlatformCLI` |
-| .NET SDK 10 | canvas-apps plugin | `winget install Microsoft.DotNet.SDK.10` |
-| Node.js ≥ 18 | code apps, FlowAgent MCP | `winget install OpenJS.NodeJS.LTS` |
-| Azure CLI | Dataverse Web API auth, FlowAgent | `winget install Microsoft.AzureCLI` |
-| Python 3 | Dataverse plugin `dv-connect` | `winget install Python.Python.3.12` |
-| git | this repo | `winget install Git.Git` |
+| Tool | Needed for | Auto | Install |
+|---|---|---|---|
+| Claude Code CLI | plugin install, MCP registration | ✓ | `npm install -g @anthropic-ai/claude-code` |
+| Python 3 | Dataverse plugin `dv-connect` | ✓ | `winget install Python.Python.3.12` |
+| GitHub CLI | pushing this repo | ✓ | `winget install GitHub.cli` |
+| pac CLI ≥ 2.7 | all Power Platform plugins | | `winget install Microsoft.PowerPlatformCLI` |
+| .NET SDK 10 | canvas-apps plugin | | `winget install Microsoft.DotNet.SDK.10` |
+| Node.js ≥ 18 | code apps, FlowAgent MCP | | `winget install OpenJS.NodeJS.LTS` |
+| Azure CLI | Dataverse Web API auth, FlowAgent | | `winget install Microsoft.AzureCLI` |
+| git | this repo | | `winget install Git.Git` |
+
+> **Windows gotcha:** installing Python isn't always enough. The Store's *App execution
+> alias* for `python.exe` shadows a real install on `PATH`. `bootstrap.ps1` detects this
+> and tells you to turn it off under **Settings → Apps → Advanced app settings → App
+> execution aliases**.
 
 ## Layout
 

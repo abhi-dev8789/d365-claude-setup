@@ -1,41 +1,45 @@
 # Manual steps
 
-`bootstrap.ps1` handles files, settings and the Learn MCP registration. These steps can't be
-scripted — `/plugin` is an interactive slash command, and the auth flows open a browser.
+`.\bootstrap.ps1 -Full` does everything scriptable: prerequisites, config projection, Learn
+MCP registration, both marketplaces, and all eight plugins.
 
-Run them once per machine, in order.
+Only three things below genuinely need a human. Run them once per machine.
 
 ---
 
-## 1. Install the plugins
+## 1. Plugins — already automated
 
-Inside a Claude Code session:
-
-```
-/plugin install dataverse@claude-plugins-official
-```
-
-Then the Microsoft app-layer marketplace:
+`bootstrap.ps1 -Full` installs these via `claude plugin install`, the documented
+non-interactive equivalent of the `/plugin` slash command:
 
 ```
-/plugin marketplace add microsoft/power-platform-skills
-/plugin install model-apps@power-platform-skills
-/plugin install power-automate@power-platform-skills
-/plugin install canvas-apps@power-platform-skills
-/plugin install power-pages@power-platform-skills
-/plugin install code-apps-preview@power-platform-skills
-/plugin install mobile-app@power-platform-skills
-/plugin install mcp-apps@power-platform-skills
+claude plugin marketplace add anthropics/claude-plugins-official
+claude plugin marketplace add microsoft/power-platform-skills
+
+claude plugin install dataverse@claude-plugins-official        --scope user
+claude plugin install model-apps@power-platform-skills         --scope user
+claude plugin install power-automate@power-platform-skills     --scope user
+claude plugin install canvas-apps@power-platform-skills        --scope user
+claude plugin install power-pages@power-platform-skills        --scope user
+claude plugin install code-apps-preview@power-platform-skills  --scope user
+claude plugin install mobile-app@power-platform-skills         --scope user
+claude plugin install mcp-apps@power-platform-skills           --scope user
 ```
 
-Verify with `/plugin` — all eight should show as enabled.
+Bootstrap verifies the result against `claude plugin list` rather than the install exit
+codes. Check yourself any time with `/plugin` → **Installed**, or `claude plugin list`.
+
+`settings.template.json` also declares `extraKnownMarketplaces` and `enabledPlugins`. That
+records intent and survives to a new machine, but it does **not** fetch plugins from an
+external marketplace on its own — the install step is still required, which is why bootstrap
+runs both.
 
 > Microsoft ships an `install.js` bootstrapper that does this plus a toolchain install. We
 > don't use it: the toolchain is already handled by `bootstrap.ps1`'s preflight, and piping a
 > remote script straight into `node` is worth avoiding when the per-step equivalent is this
 > short.
 
-## 2. Authenticate to Dataverse
+## 2. Authenticate to Dataverse — needs you
 
 ```powershell
 pac auth create --environment https://<your-dev-env>.crm<n>.dynamics.com
@@ -47,7 +51,7 @@ Entra browser sign-in. No client secrets, nothing stored in plaintext by us.
 Switch environments later with `pac auth select --index N`. The status line shows which is
 active — check it before any write.
 
-## 3. Declare your safe environments
+## 3. Declare your safe environments — needs you
 
 The `PreToolUse` hook blocks destructive `pac` commands against environments you haven't
 declared. Create `~/.claude/dev-environments.txt` with one substring per line:
@@ -63,11 +67,15 @@ Gitignored by design — client identifiers stay on the machine.
 
 Leave production out. When the hook fires on a prod target, that's it working.
 
-## 4. Run the per-plugin setup
+Bootstrap prints the `pac auth` profiles it finds, so this is usually copy-paste. It won't
+write the file for you — the same rule applies to Claude, per `CLAUDE.md`. A guard that the
+thing being guarded can widen is not a guard.
+
+## 4. Run the per-plugin setup — needs you
 
 | Plugin | Step | Notes |
 |---|---|---|
-| dataverse | run `dv-connect` | Installs the Dataverse CLI + Python SDK, authenticates, registers the Dataverse MCP server. **Install Python 3 first.** |
+| dataverse | run `dv-connect` | Installs the Dataverse CLI + Python SDK, authenticates, registers the Dataverse MCP server. **Needs a real Python 3** — see the App execution alias note in the README. |
 | canvas-apps | `/configure-canvas-mcp` | Wires up the Canvas Authoring MCP server. Needs .NET 10. |
 | power-automate | ask Claude to run its `setup` skill | Starts the bundled FlowAgent MCP server. Needs Node ≥ 18 and Azure CLI. |
 

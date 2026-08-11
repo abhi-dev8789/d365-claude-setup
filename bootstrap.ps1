@@ -13,6 +13,18 @@
     Reverse direction: copy config from ~/.claude back into this repo, to rescue edits
     made in place during a session. Review the git diff afterwards before committing.
 
+.PARAMETER Full
+    One-command setup. Implies -InstallTools and -InstallPlugins, and offers to build
+    the environment allowlist. Use this on a new machine.
+
+.PARAMETER InstallTools
+    Install missing prerequisites (Python, GitHub CLI via winget; Claude Code CLI via
+    npm) instead of only reporting them.
+
+.PARAMETER InstallPlugins
+    Register the plugin marketplaces and install all eight plugins non-interactively
+    via the claude CLI.
+
 .PARAMETER SkipMcp
     Skip registering the Microsoft Learn MCP server.
 
@@ -20,16 +32,22 @@
     Report what would change without writing anything.
 
 .EXAMPLE
-    .\bootstrap.ps1
+    .\bootstrap.ps1 -Full        # new machine: everything scriptable, in one command
+    .\bootstrap.ps1              # config only, report missing tools
     .\bootstrap.ps1 -SyncBack
     .\bootstrap.ps1 -WhatIfOnly
 #>
 [CmdletBinding()]
 param(
+    [switch]$Full,
+    [switch]$InstallTools,
+    [switch]$InstallPlugins,
     [switch]$SyncBack,
     [switch]$SkipMcp,
     [switch]$WhatIfOnly
 )
+
+if ($Full) { $InstallTools = $true; $InstallPlugins = $true }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -52,6 +70,59 @@ function Write-Ok   { param([string]$m) Write-Host "  [ok]   $m" -ForegroundColo
 function Write-Warn { param([string]$m) Write-Host "  [warn] $m" -ForegroundColor Yellow }
 function Write-Bad  { param([string]$m) Write-Host "  [MISS] $m" -ForegroundColor Red }
 function Write-Info { param([string]$m) Write-Host "  $m" -ForegroundColor Gray }
+
+# ---------------------------------------------------------------------------
+# Tool resolution
+#
+# npm's global bin and freshly-installed MSI paths are not on PATH in an already
+# running shell, so resolve by known location as well as by PATH.
+# ---------------------------------------------------------------------------
+function Resolve-Exe {
+    param([string]$Name, [string[]]$Candidates)
+
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    foreach ($c in $Candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Resolve-ClaudeCli {
+    $npmPrefix = ''
+    try { $npmPrefix = (& npm config get prefix 2>$null | Select-Object -First 1) } catch { }
+
+    $candidates = @()
+    if ($npmPrefix) { $candidates += (Join-Path $npmPrefix 'claude.cmd') }
+    $candidates += @(
+        (Join-Path $env:APPDATA 'npm\claude.cmd'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\claude\claude.exe')
+    )
+    return (Resolve-Exe -Name 'claude' -Candidates $candidates)
+}
+
+function Resolve-GhCli {
+    return (Resolve-Exe -Name 'gh' -Candidates @("$env:ProgramFiles\GitHub CLI\gh.exe"))
+}
+
+function Resolve-RealPython {
+    # The Windows Store 'python' alias is a stub that resolves on PATH, prints nothing,
+    # and shadows a real install. Look for an actual interpreter, ignoring WindowsApps.
+    $candidates = @()
+    $candidates += Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Directory -ErrorAction SilentlyContinue |
+                   ForEach-Object { Join-Path $_.FullName 'python.exe' }
+    $candidates += Get-ChildItem $env:ProgramFiles -Filter 'Python3*' -Directory -ErrorAction SilentlyContinue |
+                   ForEach-Object { Join-Path $_.FullName 'python.exe' }
+
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) {
+            $v = & $c --version 2>&1
+            if ($v -match 'Python 3') { return [pscustomobject]@{ Path = $c; Version = "$v".Trim() } }
+        }
+    }
+    return $null
+}
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -127,14 +198,19 @@ function Invoke-Preflight {
 
     $missing = @()
 
-    # The claude CLI is NOT required to project config files - only to register the MCP
-    # server. It is absent when Claude Code is used solely as the VS Code extension, which
-    # is a normal setup, not a broken one. Fall back to patching .claude.json directly.
-    $script:HasClaudeCli = Test-Tool -Name 'Claude Code CLI' -Command 'claude' -VersionArgs @('--version') `
-        -NeededFor 'registering the Learn MCP server from a script' `
-        -InstallHint 'https://claude.com/claude-code (the VS Code extension alone is fine)'
-    if (-not $script:HasClaudeCli) {
-        Write-Info '       not required - MCP will be registered by patching ~/.claude.json'
+    $script:Optional = @()   # tools we can install on request
+
+    # The claude CLI is absent when Claude Code is used only as the VS Code extension,
+    # which is a normal setup rather than a broken one. Config projection works without
+    # it, but plugin installation and `claude mcp add` need it.
+    $script:ClaudeCli = Resolve-ClaudeCli
+    if ($script:ClaudeCli) {
+        $v = (& $script:ClaudeCli --version 2>$null | Select-Object -First 1)
+        Write-Ok "Claude Code CLI $v"
+    } else {
+        Write-Warn 'Claude Code CLI not found - needed for plugin install and MCP registration'
+        Write-Info '       install: npm install -g @anthropic-ai/claude-code'
+        $script:Optional += @{ Name = 'Claude Code CLI'; Kind = 'npm'; Id = '@anthropic-ai/claude-code' }
     }
 
     if (-not (Test-PacCli)) { $missing += 'pac' }
@@ -151,13 +227,29 @@ function Invoke-Preflight {
         -NeededFor 'Dataverse Web API auth, FlowAgent' `
         -InstallHint 'winget install Microsoft.AzureCLI' | Out-Null
 
-    Test-Tool -Name 'Python 3' -Command 'python' -VersionArgs @('--version') `
-        -NeededFor 'Dataverse plugin dv-connect' `
-        -InstallHint 'winget install Python.Python.3.12' | Out-Null
+    $py = Resolve-RealPython
+    if ($py) {
+        Write-Ok "$($py.Version) ($($py.Path))"
+        $onPath = (Get-Command python -ErrorAction SilentlyContinue).Source
+        if ($onPath -like '*WindowsApps*') {
+            Write-Warn "but 'python' on PATH still resolves to the Windows Store alias stub"
+            Write-Info '       dv-connect may fail until you disable it:'
+            Write-Info '       Settings > Apps > Advanced app settings > App execution aliases'
+            Write-Info '       toggle OFF python.exe and python3.exe'
+        }
+    } else {
+        Write-Warn 'Python 3 not found - needed by the Dataverse plugin dv-connect'
+        Write-Info '       install: winget install Python.Python.3.12'
+        $script:Optional += @{ Name = 'Python 3'; Kind = 'winget'; Id = 'Python.Python.3.12' }
+    }
 
-    Test-Tool -Name 'GitHub CLI' -Command 'gh' -VersionArgs @('--version') `
-        -NeededFor 'creating/pushing the private repo' `
-        -InstallHint 'winget install GitHub.cli' | Out-Null
+    if (Resolve-GhCli) {
+        Write-Ok 'GitHub CLI present'
+    } else {
+        Write-Warn 'GitHub CLI not found - needed to create/push a private repo'
+        Write-Info '       install: winget install GitHub.cli'
+        $script:Optional += @{ Name = 'GitHub CLI'; Kind = 'winget'; Id = 'GitHub.cli' }
+    }
 
     # .NET 10 specifically - canvas-apps will not run without it.
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -173,14 +265,6 @@ function Invoke-Preflight {
     } else {
         Write-Warn ".NET SDK not found - canvas-apps plugin requires .NET 10"
         Write-Info "       install: winget install Microsoft.DotNet.SDK.10"
-    }
-
-    # Python's Windows Store alias is a stub that intercepts 'python' and does nothing useful.
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd -and $pythonCmd.Source -like '*WindowsApps*') {
-        Write-Warn "'python' resolves to the Windows Store alias stub, not a real interpreter."
-        Write-Info "       Install Python 3 properly, or disable the alias:"
-        Write-Info "       Settings > Apps > Advanced app settings > App execution aliases"
     }
 
     if ($missing.Count -gt 0) {
@@ -467,14 +551,14 @@ function Register-LearnMcpViaConfig {
 function Register-LearnMcp {
     if ($SkipMcp) { Write-Info 'Skipped (-SkipMcp).'; return }
 
-    if (-not $script:HasClaudeCli) {
-        Write-Info 'claude CLI not on PATH - registering via ~/.claude.json instead.'
+    if (-not $script:ClaudeCli) {
+        Write-Info 'claude CLI not available - registering via ~/.claude.json instead.'
         Register-LearnMcpViaConfig
         return
     }
 
     $existing = ''
-    try { $existing = (& claude mcp list 2>$null | Out-String) } catch { $existing = '' }
+    try { $existing = (& $script:ClaudeCli mcp list 2>$null | Out-String) } catch { $existing = '' }
 
     if ($existing -match 'microsoft-learn') {
         Write-Ok 'microsoft-learn already registered.'
@@ -483,7 +567,7 @@ function Register-LearnMcp {
 
     if ($WhatIfOnly) { Write-Info "would run: claude mcp add --scope user --transport http microsoft-learn $LearnMcpUrl"; return }
 
-    & claude mcp add --scope user --transport http microsoft-learn $LearnMcpUrl
+    & $script:ClaudeCli mcp add --scope user --transport http microsoft-learn $LearnMcpUrl
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "Registered microsoft-learn ($LearnMcpUrl)"
     } else {
@@ -493,33 +577,149 @@ function Register-LearnMcp {
 }
 
 # ---------------------------------------------------------------------------
-# Manual steps - slash commands are interactive and cannot be scripted.
+# Optional tool installation
+# ---------------------------------------------------------------------------
+function Install-MissingTools {
+    if (-not $script:Optional -or $script:Optional.Count -eq 0) {
+        Write-Ok 'Nothing missing.'
+        return
+    }
+
+    foreach ($t in $script:Optional) {
+        if ($WhatIfOnly) { Write-Info "would install $($t.Name) via $($t.Kind)"; continue }
+
+        Write-Info "installing $($t.Name)..."
+        if ($t.Kind -eq 'winget') {
+            & winget install --id $t.Id --source winget `
+                --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+        } else {
+            & npm install -g $t.Id 2>&1 | Out-Null
+        }
+
+        # Re-resolve rather than trusting the exit code - winget returns 0 for
+        # "already installed" and for some partial states.
+        $ok = switch ($t.Name) {
+            'Claude Code CLI' { [bool]($script:ClaudeCli = Resolve-ClaudeCli) }
+            'GitHub CLI'      { [bool](Resolve-GhCli) }
+            'Python 3'        { [bool](Resolve-RealPython) }
+            default           { $false }   # no verifier written - do not claim success
+        }
+        if ($ok) { Write-Ok "$($t.Name)" } else { Write-Bad "$($t.Name) - could not verify a usable binary after install" }
+    }
+
+    Write-Info 'Newly installed tools may need a new terminal before they are on PATH.'
+}
+
+# ---------------------------------------------------------------------------
+# Plugins
+#
+# `claude plugin install` is the documented non-interactive path; the /plugin
+# slash command is interactive and cannot be scripted. settings.template.json
+# also declares extraKnownMarketplaces/enabledPlugins, but that alone does not
+# fetch plugins from an external marketplace - the install step is still needed.
+# ---------------------------------------------------------------------------
+$script:Marketplaces = @(
+    @{ Name = 'claude-plugins-official'; Repo = 'anthropics/claude-plugins-official' },
+    @{ Name = 'power-platform-skills';   Repo = 'microsoft/power-platform-skills' }
+)
+
+$script:Plugins = @(
+    'dataverse@claude-plugins-official',
+    'model-apps@power-platform-skills',
+    'power-automate@power-platform-skills',
+    'canvas-apps@power-platform-skills',
+    'power-pages@power-platform-skills',
+    'code-apps-preview@power-platform-skills',
+    'mobile-app@power-platform-skills',
+    'mcp-apps@power-platform-skills'
+)
+
+function Install-Plugins {
+    if (-not $script:ClaudeCli) {
+        Write-Warn 'Claude Code CLI not available - skipping plugin install.'
+        Write-Info '  Install it (npm install -g @anthropic-ai/claude-code) and re-run,'
+        Write-Info '  or run the /plugin commands listed below by hand.'
+        return
+    }
+
+    if ($WhatIfOnly) {
+        Write-Info "would add $($script:Marketplaces.Count) marketplaces and install $($script:Plugins.Count) plugins"
+        return
+    }
+
+    foreach ($m in $script:Marketplaces) {
+        $out = (& $script:ClaudeCli plugin marketplace add $m.Repo 2>&1 | Out-String)
+        if ($out -match 'Successfully added|already') { Write-Ok "marketplace $($m.Name)" }
+        else { Write-Warn "marketplace $($m.Name) - $(($out -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1))" }
+    }
+
+    foreach ($p in $script:Plugins) {
+        & $script:ClaudeCli plugin install $p --scope user 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Ok $p } else { Write-Bad "$p (exit $LASTEXITCODE)" }
+    }
+
+    # Verify against the CLI's own view rather than the install exit codes.
+    $listed = (& $script:ClaudeCli plugin list 2>&1 | Out-String)
+    $missing = $script:Plugins | Where-Object { $listed -notmatch [regex]::Escape($_) }
+    if ($missing) { Write-Bad "not present after install: $($missing -join ', ')" }
+    else { Write-Ok "verified all $($script:Plugins.Count) plugins installed" }
+}
+
+# ---------------------------------------------------------------------------
+# Environment allowlist
+#
+# Deliberately interactive. The guard hook is pointless if it can be widened
+# without a human deciding which environments are safe to write to.
+# ---------------------------------------------------------------------------
+function New-DevEnvironmentsFile {
+    $path = Join-Path $ClaudeDir 'dev-environments.txt'
+
+    if (Test-Path -LiteralPath $path) {
+        $n = (Get-Content -LiteralPath $path | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') } | Measure-Object).Count
+        Write-Ok "allowlist exists ($n entries)"
+        return
+    }
+
+    Write-Warn 'No environment allowlist - destructive pac commands are all blocked.'
+
+    $profiles = @()
+    try {
+        $profiles = & pac auth list 2>$null |
+                    Select-String -Pattern '(https://[a-zA-Z0-9\-]+\.[a-zA-Z0-9\.\-]*dynamics\.com)' -AllMatches |
+                    ForEach-Object { $_.Matches[0].Groups[1].Value } |
+                    Sort-Object -Unique
+    } catch { }
+
+    if ($profiles) {
+        Write-Info 'pac auth profiles found on this machine:'
+        foreach ($p in $profiles) { Write-Info "    $p" }
+    }
+
+    Write-Info ''
+    Write-Info "Create $path with one substring per line for each environment that is"
+    Write-Info 'safe for destructive operations (import, delete, push). Leave production out.'
+    Write-Info 'This file is gitignored - client identifiers stay on this machine.'
+}
+
+# ---------------------------------------------------------------------------
+# Manual steps - what genuinely cannot be scripted.
 # ---------------------------------------------------------------------------
 function Show-ManualSteps {
     Write-Host ''
-    Write-Host '  Run these inside a Claude Code session (slash commands cannot be scripted):' -ForegroundColor White
+    Write-Host '  These need a human. Everything else is done.' -ForegroundColor White
     Write-Host ''
-
-    $commands = @(
-        '/plugin install dataverse@claude-plugins-official',
-        '/plugin marketplace add microsoft/power-platform-skills',
-        '/plugin install model-apps@power-platform-skills',
-        '/plugin install power-automate@power-platform-skills',
-        '/plugin install canvas-apps@power-platform-skills',
-        '/plugin install power-pages@power-platform-skills',
-        '/plugin install code-apps-preview@power-platform-skills',
-        '/plugin install mobile-app@power-platform-skills',
-        '/plugin install mcp-apps@power-platform-skills'
-    )
-    foreach ($c in $commands) { Write-Host "    $c" -ForegroundColor Cyan }
-
+    Write-Host '  1. Sign in to Dataverse (opens a browser - cannot be scripted):' -ForegroundColor White
+    Write-Host '       pac auth create --environment <your-dev-env-url>' -ForegroundColor Cyan
     Write-Host ''
-    Write-Host '  Then, once per machine:' -ForegroundColor White
-    Write-Host '    pac auth create --environment <your-dev-env-url>' -ForegroundColor Cyan
-    Write-Host '    dv-connect        (Dataverse plugin: tool checks + MCP registration)' -ForegroundColor Cyan
-    Write-Host '    /configure-canvas-mcp                     (canvas-apps)' -ForegroundColor Cyan
-    Write-Host '    ask Claude to run the power-automate "setup" skill' -ForegroundColor Cyan
+    Write-Host '  2. In a Claude Code session, run each plugin''s one-time setup:' -ForegroundColor White
+    Write-Host '       dv-connect              (Dataverse: tool checks, auth, MCP registration)' -ForegroundColor Cyan
+    Write-Host '       /configure-canvas-mcp   (canvas-apps: authoring MCP server)' -ForegroundColor Cyan
+    Write-Host '       ask Claude to run the power-automate setup skill' -ForegroundColor Cyan
     Write-Host ''
+    Write-Host '  3. Create the environment allowlist if you have not yet:' -ForegroundColor White
+    Write-Host "       $ClaudeDir\dev-environments.txt" -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  Restart Claude Code to pick up plugins and the MCP server.' -ForegroundColor Gray
     Write-Host '  Full detail: docs/manual-steps.md' -ForegroundColor Gray
 }
 
@@ -544,6 +744,11 @@ if ($SyncBack) {
 
 Invoke-Preflight
 
+if ($InstallTools) {
+    Write-Step 'Installing missing tools'
+    Install-MissingTools
+}
+
 if (-not (Test-Path -LiteralPath $ClaudeDir)) {
     if (-not $WhatIfOnly) { New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null }
     Write-Info "Created $ClaudeDir"
@@ -560,6 +765,14 @@ Update-Settings
 
 Write-Step 'Microsoft Learn MCP server'
 Register-LearnMcp
+
+if ($InstallPlugins) {
+    Write-Step 'Plugins'
+    Install-Plugins
+}
+
+Write-Step 'Environment allowlist'
+New-DevEnvironmentsFile
 
 Write-Step 'Remaining manual steps'
 Show-ManualSteps
