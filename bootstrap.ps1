@@ -1296,7 +1296,12 @@ function Invoke-Uninstall {
     }
 
     Write-Host ''
-    Write-Host 'Uninstall complete. Restart Claude Code to unload plugins and the MCP server.' -ForegroundColor Green
+    if ($WhatIfOnly) {
+        Write-Host 'DRY RUN COMPLETE - nothing was changed.' -ForegroundColor Yellow
+        Write-Host 'Re-run without -WhatIfOnly to actually perform the uninstall.' -ForegroundColor Yellow
+    } else {
+        Write-Host 'Uninstall complete. Restart Claude Code to unload plugins and the MCP server.' -ForegroundColor Green
+    }
     Write-Host ''
 }
 
@@ -1390,5 +1395,10 @@ New-DevEnvironmentsFile
 Write-Step 'Remaining manual steps'
 Show-ManualSteps
 
-Write-Host 'Bootstrap complete.' -ForegroundColor Green
+if ($WhatIfOnly) {
+    Write-Host 'DRY RUN COMPLETE - nothing was changed.' -ForegroundColor Yellow
+    Write-Host 'Re-run without -WhatIfOnly to apply.' -ForegroundColor Yellow
+} else {
+    Write-Host 'Bootstrap complete.' -ForegroundColor Green
+}
 Write-Host ''
