@@ -942,6 +942,100 @@ function New-DevEnvironmentsFile {
 }
 
 # ---------------------------------------------------------------------------
+# Surgical settings cleanup
+#
+# Removes only what this setup added, leaving every other key untouched. The
+# alternative - restoring settings.json wholesale from the pre-install backup -
+# would silently revert anything the user changed afterwards (a permission they
+# added, a model they switched to). Undoing our own changes is in scope; undoing
+# theirs is not.
+# ---------------------------------------------------------------------------
+function Remove-OurSettingsKeys {
+    param(
+        [string]$SettingsPath,
+        [string[]]$PreexistingPlugins,
+        [string[]]$PreexistingMarketplaces
+    )
+
+    $templatePath = Join-Path $RepoClaude 'settings.template.json'
+    if (-not (Test-Path -LiteralPath $templatePath)) {
+        Write-Warn '  settings.template.json missing - cannot tell which keys are ours; settings.json left untouched'
+        return
+    }
+
+    try {
+        $current  = ConvertTo-Hashtable (ConvertFrom-Json (Get-Content -LiteralPath $SettingsPath -Raw))
+        $tplRaw   = (Get-Content -LiteralPath $templatePath -Raw) -replace '\{\{CLAUDE_DIR\}\}', (($ClaudeDir | ConvertTo-Json).Trim('"'))
+        $template = ConvertTo-Hashtable (ConvertFrom-Json $tplRaw)
+    } catch {
+        Write-Warn "  could not parse settings - left untouched ($($_.Exception.Message))"
+        return
+    }
+
+    $changes = @()
+
+    # Plugin entries we enabled, minus any that were already enabled.
+    foreach ($key in @('enabledPlugins','extraKnownMarketplaces')) {
+        if (-not $current.ContainsKey($key) -or -not $template.ContainsKey($key)) { continue }
+        $keep = if ($key -eq 'enabledPlugins') { $PreexistingPlugins } else { $PreexistingMarketplaces }
+        foreach ($name in @($template[$key].Keys)) {
+            if ($keep -contains $name) { continue }
+            if ($current[$key].ContainsKey($name)) { $current[$key].Remove($name); $changes += "$key/$name" }
+        }
+        if ($current[$key].Keys.Count -eq 0) { $current.Remove($key) }
+    }
+
+    # Permission entries: remove exactly the strings our template contributed.
+    if ($current.ContainsKey('permissions') -and $template.ContainsKey('permissions')) {
+        foreach ($bucket in @('allow','ask')) {
+            if (-not $current['permissions'].ContainsKey($bucket) -or -not $template['permissions'].ContainsKey($bucket)) { continue }
+            $ourEntries = @($template['permissions'][$bucket])
+            $remaining  = @($current['permissions'][$bucket] | Where-Object { $ourEntries -notcontains $_ })
+            $dropped    = @($current['permissions'][$bucket]).Count - $remaining.Count
+            if ($dropped -gt 0) { $changes += "permissions.$bucket ($dropped entries)" }
+            if ($remaining.Count -eq 0) { $current['permissions'].Remove($bucket) } else { $current['permissions'][$bucket] = $remaining }
+        }
+        if ($current['permissions'].Keys.Count -eq 0) { $current.Remove('permissions') }
+    }
+
+    # statusLine / hooks: only if they still point at our scripts. If the user
+    # repointed them at something of their own, leave well alone.
+    if ($current.ContainsKey('statusLine')) {
+        $cmd = [string]$current['statusLine']['command']
+        if ($cmd -like '*statusline.ps1*' -and $cmd -like "*$ClaudeDir*") { $current.Remove('statusLine'); $changes += 'statusLine' }
+        else { Write-Warn '  statusLine does not point at our script - left in place' }
+    }
+
+    if ($current.ContainsKey('hooks') -and $current['hooks'].ContainsKey('PreToolUse')) {
+        $kept = @()
+        foreach ($entry in @($current['hooks']['PreToolUse'])) {
+            $isOurs = $false
+            foreach ($h in @($entry['hooks'])) {
+                if ([string]$h['command'] -like '*guard-pac-env.ps1*') { $isOurs = $true }
+            }
+            if ($isOurs) { $changes += 'hooks.PreToolUse (guard-pac-env)' } else { $kept += $entry }
+        }
+        if ($kept.Count -eq 0) { $current['hooks'].Remove('PreToolUse') } else { $current['hooks']['PreToolUse'] = $kept }
+        if ($current['hooks'].Keys.Count -eq 0) { $current.Remove('hooks') }
+    }
+
+    if ($changes.Count -eq 0) {
+        Write-Info '  settings.json - nothing of ours left to remove'
+        return
+    }
+
+    if ($WhatIfOnly) {
+        Write-Info "  would remove from settings.json: $($changes -join ', ')"
+        Write-Info "  would keep: $(@($current.Keys) -join ', ')"
+        return
+    }
+
+    $current | ConvertTo-Json -Depth 20 | Out-File -LiteralPath $SettingsPath -Encoding utf8 -Force
+    Write-Ok "  cleaned settings.json (removed: $($changes -join ', '))"
+    Write-Info "  kept: $(@($current.Keys) -join ', ')"
+}
+
+# ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
 function Invoke-Uninstall {
@@ -1023,22 +1117,63 @@ function Invoke-Uninstall {
         & $cli mcp remove microsoft-learn --scope user 2>&1 | Out-Null
         Write-Ok '  unregistered microsoft-learn'
     } else {
+        # No CLI. Excise just the block we inserted - never restore ~/.claude.json
+        # wholesale from a backup: it is a live state file holding OAuth account,
+        # project registrations, history and caches, all of which have moved on
+        # since setup. Rolling it back would destroy unrelated state.
         $cj = Join-Path $env:USERPROFILE '.claude.json'
-        $bak = Get-ChildItem $env:USERPROFILE -Filter '.claude.json.bak-*' -Force -ErrorAction SilentlyContinue |
-               Sort-Object Name | Select-Object -First 1
-        if ($bak -and -not $hadMcp) {
-            Copy-Item -LiteralPath $bak.FullName -Destination $cj -Force
-            Write-Ok "  restored ~/.claude.json from $($bak.Name)"
+        if (-not (Test-Path -LiteralPath $cj)) {
+            Write-Info '  ~/.claude.json not present - nothing to do'
+        } elseif ($hadMcp) {
+            Write-Warn '  a root "mcpServers" block pre-dated setup - not editing it'
+            Write-Info '    remove the "microsoft-learn" entry by hand if you want it gone'
         } else {
-            Write-Warn '  remove the "microsoft-learn" entry from ~/.claude.json by hand'
+            $raw = Get-Content -LiteralPath $cj -Raw
+            $pattern = '(?s)\s*"mcpServers"\s*:\s*\{\s*"microsoft-learn"\s*:\s*\{[^}]*\}\s*\}\s*,?'
+            if ($raw -notmatch '"microsoft-learn"') {
+                Write-Info '  microsoft-learn not present in ~/.claude.json'
+            } elseif ($raw -notmatch $pattern) {
+                Write-Warn '  ~/.claude.json has been edited since setup - not touching it'
+                Write-Info '    remove the "microsoft-learn" entry by hand'
+            } elseif ($WhatIfOnly) {
+                Write-Info '  would remove only the microsoft-learn mcpServers block'
+            } else {
+                $patched = $raw -replace $pattern, ''
+                try {
+                    $null = $patched | ConvertFrom-Json
+                    Copy-Item -LiteralPath $cj -Destination "$cj.pre-uninstall-$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force
+                    $patched | Out-File -LiteralPath $cj -Encoding utf8 -NoNewline -Force
+                    Write-Ok '  removed the microsoft-learn entry from ~/.claude.json'
+                } catch {
+                    Write-Warn '  edit would have produced invalid JSON - left untouched'
+                    Write-Info '    remove the "microsoft-learn" entry by hand'
+                }
+            }
         }
+    }
+
+    # --- safety net ----------------------------------------------------------
+    # Snapshot the CURRENT state before removing anything, so a mistake here is
+    # recoverable. Distinct from the .backup-* folders, which hold pre-install state.
+    if (-not $WhatIfOnly) {
+        $preUninstall = Join-Path $ClaudeDir ".pre-uninstall-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        New-Item -ItemType Directory -Path $preUninstall -Force | Out-Null
+        foreach ($f in ($ManagedFiles + @('settings.json','dev-environments.txt'))) {
+            $p = Join-Path $ClaudeDir $f
+            if (Test-Path -LiteralPath $p -PathType Leaf) { Copy-Item -LiteralPath $p -Destination $preUninstall -Force }
+        }
+        foreach ($d in $ManagedDirs) {
+            $p = Join-Path $ClaudeDir $d
+            if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $preUninstall -Recurse -Force }
+        }
+        Write-Host ''
+        Write-Ok "snapshot of current state: $preUninstall"
     }
 
     # --- config files --------------------------------------------------------
     Write-Host ''
     Write-Info 'Config files:'
 
-    # The earliest backup holds the pre-existing copies, if any.
     $firstBackup = Get-ChildItem $ClaudeDir -Directory -Filter '.backup-*' -Force -ErrorAction SilentlyContinue |
                    Sort-Object Name | Select-Object -First 1
 
@@ -1057,29 +1192,55 @@ function Invoke-Uninstall {
         }
     }
 
+    # Directories: delete only the files this repo actually ships, never the whole
+    # folder. skills/ and hooks/ are shared spaces - a user who added their own skill
+    # after setup would otherwise lose it to a -Recurse delete of a directory we only
+    # partly own. Remove the directory afterwards only if it is empty.
     foreach ($d in $ManagedDirs) {
         $dst = Join-Path $ClaudeDir $d
+        $src = Join-Path $RepoClaude $d
         if (-not (Test-Path -LiteralPath $dst)) { continue }
-        if ($preDirs -contains $d) {
-            Write-Warn "  $d/ pre-existed - left in place; restore from $($firstBackup.Name) if needed"
+        if (-not (Test-Path -LiteralPath $src)) {
+            Write-Warn "  $d/ - repo copy missing, cannot tell which files are ours; left in place"
+            continue
+        }
+
+        $ours = Get-ChildItem -LiteralPath $src -Recurse -File |
+                ForEach-Object { $_.FullName.Substring($src.Length).TrimStart('\') }
+
+        $removed = 0; $kept = 0
+        foreach ($rel in $ours) {
+            $target = Join-Path $dst $rel
+            if (-not (Test-Path -LiteralPath $target)) { continue }
+            if ($WhatIfOnly) { Write-Info "  would delete $d/$rel"; $removed++; continue }
+            Remove-Item -LiteralPath $target -Force
+            $removed++
+        }
+
+        $leftover = @(Get-ChildItem -LiteralPath $dst -Recurse -File -ErrorAction SilentlyContinue)
+        $kept = $leftover.Count
+
+        if ($WhatIfOnly) {
+            Write-Info "  $d/ - would remove $removed of ours"
+        } elseif ($kept -eq 0) {
+            Remove-Item -LiteralPath $dst -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Ok "  removed $d/ ($removed files, nothing else was in it)"
         } else {
-            if ($WhatIfOnly) { Write-Info "  would delete $d/ (did not exist before)" }
-            else { Remove-Item -LiteralPath $dst -Recurse -Force; Write-Ok "  deleted $d/" }
+            Write-Ok "  removed $removed file(s) from $d/"
+            Write-Warn "  kept $d/ - $kept file(s) there are not ours"
         }
     }
 
-    # settings.json: restore the original, or remove it if we created it.
+    # settings.json: strip only the keys we added. A wholesale restore from the
+    # pre-install backup would silently revert anything the user changed since -
+    # a new permission, a different model - which is not ours to undo.
     $settingsPath = Join-Path $ClaudeDir 'settings.json'
     if (Test-Path -LiteralPath $settingsPath) {
-        if ($settingsExisted) {
-            $src = if ($firstBackup) { Join-Path $firstBackup.FullName 'settings.json' } else { $null }
-            if ($src -and (Test-Path -LiteralPath $src)) {
-                if ($WhatIfOnly) { Write-Info '  would restore settings.json from backup' }
-                else { Copy-Item -LiteralPath $src -Destination $settingsPath -Force; Write-Ok '  restored settings.json' }
-            } else { Write-Warn '  settings.json pre-existed but no backup found - left in place' }
-        } else {
+        if (-not $settingsExisted) {
             if ($WhatIfOnly) { Write-Info '  would delete settings.json (did not exist before)' }
             else { Remove-Item -LiteralPath $settingsPath -Force; Write-Ok '  deleted settings.json' }
+        } else {
+            Remove-OurSettingsKeys -SettingsPath $settingsPath -PreexistingPlugins $prePlugins -PreexistingMarketplaces $preMarkets
         }
     }
 

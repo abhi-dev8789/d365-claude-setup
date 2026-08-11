@@ -167,12 +167,28 @@ there existed before the first run and is restored; a file absent from it was ou
 removed. With no backups either, it deletes nothing and only reports, because assuming "this
 didn't exist" would destroy a `settings.json` that was only ever merged into.
 
-Timestamped backups are kept under `~/.claude/.backup-*`. Delete them once you're satisfied.
+### What it will not touch
 
-> The uninstall's decision logic is verified via `-WhatIfOnly`, including correctly restoring
-> a pre-existing `settings.json` rather than deleting it. A full destructive round-trip on a
-> real machine has not been run — so on someone else's laptop, do the `-WhatIfOnly` pass first
-> and read what it intends to do.
+The uninstall only removes things this repo created. Specifically:
+
+| Concern | Behaviour |
+|---|---|
+| **Your own skills** | `skills/` and `hooks/` are shared folders. It deletes only the files this repo ships, never the directory, and removes the directory afterwards only if it's empty. A skill you added yourself survives. |
+| **Your settings** | It strips only the keys it added — its plugin entries, its permission strings, its `statusLine`, its hook. Every other key is kept, including changes made after setup. It does **not** restore `settings.json` wholesale, because that would silently revert your later edits. |
+| **`statusLine` / hooks you repointed** | Removed only if they still reference this repo's scripts. Point them at something of your own and they're left alone. |
+| **`~/.claude.json`** | Only the `microsoft-learn` block is excised, and only if it's byte-identical to what was inserted. Never restored wholesale — it's a live state file holding your account, project registrations and history. If it's been edited since, it's left untouched with a note. |
+| **Plugins and marketplaces** | Only the eight installed here, and only those not already present before setup. |
+| **Tools** | Left installed unless you pass `-RemoveTools`. |
+| **Anything else under `~/.claude`** | Never touched. |
+
+Before deleting anything it snapshots the current state to `~/.claude/.pre-uninstall-<timestamp>`,
+separate from the pre-install `.backup-*` folders. So there are two recovery points: what the
+machine looked like before setup, and what it looked like just before removal.
+
+> Verified with `-WhatIfOnly` against a machine seeded with a user's own skill, their own
+> permission entry, and a custom settings key — all three survived, while the eight plugins,
+> 51 permissions, `statusLine` and hook were correctly identified for removal. A full
+> destructive round-trip has not been run, so do the `-WhatIfOnly` pass first and read it.
 
 ## Layout
 
