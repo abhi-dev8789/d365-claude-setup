@@ -139,9 +139,36 @@ that is the user's decision, and a guard the agent can widen protects nothing.
 "@
 }
 
-$entries = @(Get-Content -LiteralPath $AllowlistFile |
-             ForEach-Object { $_.Trim() } |
-             Where-Object { $_ -and -not $_.StartsWith('#') })
+function Get-AllowlistEntries {
+    <#
+        The generated file puts the org URL in a trailing comment on the same line:
+
+            # contoso-dev                 # https://contoso-dev.crm8.dynamics.com
+
+        Users enable a line by deleting a '#' - and often delete both. Naive parsing
+        then yields "contoso-dev   https://contoso-dev..." as the token, which can
+        never substring-match the target URL, so an environment the user believes is
+        enabled stays silently blocked.
+
+        So: drop anything from the first '#' onward, then keep only the first
+        whitespace-delimited token. Entries are substrings and never contain spaces,
+        making that safe for every variant - with the inline comment, without it, or
+        with both '#' removed.
+    #>
+    param([string]$Path)
+
+    Get-Content -LiteralPath $Path |
+        ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line -or $line.StartsWith('#')) { return }
+            $line = ($line -split '#', 2)[0].Trim()
+            if (-not $line) { return }
+            ($line -split '\s+')[0]
+        } |
+        Where-Object { $_ }
+}
+
+$entries = @(Get-AllowlistEntries -Path $AllowlistFile)
 
 if ($entries.Count -eq 0) {
     Exit-Block @"

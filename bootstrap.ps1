@@ -770,9 +770,17 @@ function New-DevEnvironmentsFile {
     $path = Join-Path $ClaudeDir 'dev-environments.txt'
 
     if (Test-Path -LiteralPath $path) {
+        # Same parsing as hooks/guard-pac-env.ps1: strip any trailing comment, then
+        # keep the first token. Users enabling a line often delete both '#' chars.
         $active = @(Get-Content -LiteralPath $path |
-                    ForEach-Object { $_.Trim() } |
-                    Where-Object { $_ -and -not $_.StartsWith('#') })
+                    ForEach-Object {
+                        $line = $_.Trim()
+                        if (-not $line -or $line.StartsWith('#')) { return }
+                        $line = ($line -split '#', 2)[0].Trim()
+                        if (-not $line) { return }
+                        ($line -split '\s+')[0]
+                    } |
+                    Where-Object { $_ })
         if ($active.Count -gt 0) {
             Write-Ok "allowlist has $($active.Count) active entr$(if ($active.Count -eq 1) { 'y' } else { 'ies' }): $($active -join ', ')"
         } else {
@@ -801,6 +809,9 @@ function New-DevEnvironmentsFile {
         '# Matched as substrings against the target org URL. Uncomment a line to trust',
         '# that environment. Anything not listed here is treated as production and',
         '# blocked by ~/.claude/hooks/guard-pac-env.ps1.',
+        '#',
+        '# To enable one, delete the leading "#". The URL after the second "#" is just',
+        '# a note showing what the token matches - leaving it, or deleting it, both work.',
         '#',
         '# Leave production commented out. That is the entire point of the file.',
         '#',
