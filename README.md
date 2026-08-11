@@ -53,9 +53,21 @@ cd claude-config
 .\bootstrap.ps1 -Full
 ```
 
-That single command installs any missing prerequisites, projects the config into
-`~/.claude`, registers the Microsoft Learn MCP server, adds both plugin marketplaces, and
-installs all eight plugins — then verifies each step rather than trusting exit codes.
+That single command installs **every** missing prerequisite — pac CLI, Node, git, .NET, Azure
+CLI, Python, GitHub CLI, and the Claude Code CLI — projects the config into `~/.claude`,
+registers the Microsoft Learn MCP server, adds both plugin marketplaces, and installs all
+eight plugins. Each step is verified by re-checking the result, not by trusting an exit code.
+
+winget writes `PATH` to the registry, which a running shell won't see, so bootstrap refreshes
+its own `PATH` after each install. That ordering matters: Node has to be installed *and*
+visible before npm can install the Claude Code CLI.
+
+> **Tested end-to-end on a machine that already had the toolchain.** The clean-machine path —
+> where winget installs Node and the same run then uses npm — is written for but not yet
+> exercised on a genuinely bare Windows install. If a tool lands but isn't usable in the same
+> run, bootstrap says so and tells you to re-run from a new terminal; because it's idempotent,
+> that second run is harmless. Worth knowing before you hand this to someone else as
+> guaranteed-first-time.
 
 It is idempotent. Re-run it any time; it backs up whatever it is about to replace and
 **merges** into `settings.json` rather than overwriting, so machine-local settings survive.

@@ -211,14 +211,24 @@ function Test-PacCli {
     return $true
 }
 
+function Update-SessionPath {
+    # winget writes PATH to the registry; an already-running shell keeps its stale copy.
+    # Without this, a tool installed moments ago is invisible for the rest of the run -
+    # which matters most for Node, since npm must exist before the Claude CLI installs.
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user    = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
+}
+
 function Invoke-Preflight {
     Write-Step 'Preflight'
-    Write-Info "Reporting only - nothing is installed for you."
+    if ($InstallTools) { Write-Info 'Missing tools will be installed.' }
+    else { Write-Info 'Reporting only - nothing is installed. Use -Full to install.' }
     Write-Host ''
 
-    $missing = @()
-
-    $script:Optional = @()   # tools we can install on request
+    # Every entry is installable. Required ones block setup if still absent afterwards.
+    # Kind 'winget' entries are installed before 'npm' ones, because npm needs Node.
+    $script:Missing = @()
 
     # The claude CLI is absent when Claude Code is used only as the VS Code extension,
     # which is a normal setup rather than a broken one. Config projection works without
@@ -230,22 +240,30 @@ function Invoke-Preflight {
     } else {
         Write-Warn 'Claude Code CLI not found - needed for plugin install and MCP registration'
         Write-Info '       install: npm install -g @anthropic-ai/claude-code'
-        $script:Optional += @{ Name = 'Claude Code CLI'; Kind = 'npm'; Id = '@anthropic-ai/claude-code' }
+        $script:Missing += @{ Name = 'Claude Code CLI'; Kind = 'npm'; Id = '@anthropic-ai/claude-code'; Required = $false }
     }
 
-    if (-not (Test-PacCli)) { $missing += 'pac' }
+    if (-not (Test-PacCli)) {
+        $script:Missing += @{ Name = 'pac CLI'; Kind = 'winget'; Id = 'Microsoft.PowerPlatformCLI'; Required = $true }
+    }
 
     if (-not (Test-Tool -Name 'Node.js' -Command 'node' -VersionArgs @('--version') `
         -NeededFor 'code apps, FlowAgent MCP (needs >= 18)' `
-        -InstallHint 'winget install OpenJS.NodeJS.LTS' -Required)) { $missing += 'node' }
+        -InstallHint 'winget install OpenJS.NodeJS.LTS' -Required)) {
+        $script:Missing += @{ Name = 'Node.js'; Kind = 'winget'; Id = 'OpenJS.NodeJS.LTS'; Required = $true }
+    }
 
     if (-not (Test-Tool -Name 'git' -Command 'git' -VersionArgs @('--version') `
-        -NeededFor 'this repo' -InstallHint 'winget install Git.Git' -Required)) { $missing += 'git' }
+        -NeededFor 'cloning this repo' -InstallHint 'winget install Git.Git' -Required)) {
+        $script:Missing += @{ Name = 'git'; Kind = 'winget'; Id = 'Git.Git'; Required = $true }
+    }
 
     # Optional-but-expected: absence degrades specific plugins rather than blocking setup.
-    Test-Tool -Name 'Azure CLI' -Command 'az' -VersionArgs @('version', '--output', 'tsv') `
+    if (-not (Test-Tool -Name 'Azure CLI' -Command 'az' -VersionArgs @('version', '--output', 'tsv') `
         -NeededFor 'Dataverse Web API auth, FlowAgent' `
-        -InstallHint 'winget install Microsoft.AzureCLI' | Out-Null
+        -InstallHint 'winget install Microsoft.AzureCLI')) {
+        $script:Missing += @{ Name = 'Azure CLI'; Kind = 'winget'; Id = 'Microsoft.AzureCLI'; Required = $false }
+    }
 
     $py = Resolve-RealPython
     if ($py) {
@@ -261,7 +279,7 @@ function Invoke-Preflight {
         $pyId = Get-LatestPythonPackageId
         Write-Warn 'Python 3 not found - needed by the Dataverse plugin dv-connect'
         Write-Info "       install: winget install $pyId"
-        $script:Optional += @{ Name = 'Python 3'; Kind = 'winget'; Id = $pyId }
+        $script:Missing += @{ Name = 'Python 3'; Kind = 'winget'; Id = $pyId; Required = $false }
     }
 
     if (Resolve-GhCli) {
@@ -269,7 +287,7 @@ function Invoke-Preflight {
     } else {
         Write-Warn 'GitHub CLI not found - needed to create/push a private repo'
         Write-Info '       install: winget install GitHub.cli'
-        $script:Optional += @{ Name = 'GitHub CLI'; Kind = 'winget'; Id = 'GitHub.cli' }
+        $script:Missing += @{ Name = 'GitHub CLI'; Kind = 'winget'; Id = 'GitHub.cli'; Required = $false }
     }
 
     # canvas-apps documents .NET 10 as its minimum. Test for >= that major version rather
@@ -287,14 +305,28 @@ function Invoke-Preflight {
             $have = if ($majors) { ($majors -join ', ') } else { 'none' }
             Write-Warn ".NET SDK >= $dotnetMinMajor not found (have: $have) - canvas-apps requires it"
             Write-Info "       install: winget install Microsoft.DotNet.SDK.$dotnetMinMajor"
+            $script:Missing += @{ Name = ".NET SDK $dotnetMinMajor"; Kind = 'winget'; Id = "Microsoft.DotNet.SDK.$dotnetMinMajor"; Required = $false }
         }
     } else {
         Write-Warn ".NET SDK not found - canvas-apps requires >= $dotnetMinMajor"
         Write-Info "       install: winget install Microsoft.DotNet.SDK.$dotnetMinMajor"
+        $script:Missing += @{ Name = ".NET SDK $dotnetMinMajor"; Kind = 'winget'; Id = "Microsoft.DotNet.SDK.$dotnetMinMajor"; Required = $false }
     }
+}
 
-    if ($missing.Count -gt 0) {
-        throw "Required tools missing: $($missing -join ', '). Install them and re-run."
+function Assert-RequiredTools {
+    $stillMissing = @()
+    if (-not (Get-Command pac  -ErrorAction SilentlyContinue)) { $stillMissing += 'pac' }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { $stillMissing += 'node' }
+    if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { $stillMissing += 'git' }
+
+    if ($stillMissing.Count -gt 0) {
+        if ($InstallTools) {
+            throw ("Required tools still missing after install: {0}. " -f ($stillMissing -join ', ')) +
+                  "Open a NEW terminal (PATH may be stale) and re-run .\bootstrap.ps1 -Full."
+        }
+        throw ("Required tools missing: {0}. " -f ($stillMissing -join ', ')) +
+              "Re-run with -Full to install them automatically."
     }
 }
 
@@ -605,35 +637,66 @@ function Register-LearnMcp {
 # ---------------------------------------------------------------------------
 # Optional tool installation
 # ---------------------------------------------------------------------------
+function Test-ToolPresent {
+    param([string]$Name)
+
+    # Verify by re-resolving the binary, never by the installer's exit code:
+    # winget returns 0 for "already installed" and for some partial states.
+    switch ($Name) {
+        'Claude Code CLI' { return [bool]($script:ClaudeCli = Resolve-ClaudeCli) }
+        'GitHub CLI'      { return [bool](Resolve-GhCli) }
+        'Python 3'        { return [bool](Resolve-RealPython) }
+        'pac CLI'         { return [bool](Get-Command pac    -ErrorAction SilentlyContinue) }
+        'Node.js'         { return [bool](Get-Command node   -ErrorAction SilentlyContinue) }
+        'git'             { return [bool](Get-Command git    -ErrorAction SilentlyContinue) }
+        'Azure CLI'       { return [bool](Get-Command az     -ErrorAction SilentlyContinue) }
+        default {
+            if ($Name -like '.NET SDK*') {
+                $d = Get-Command dotnet -ErrorAction SilentlyContinue
+                return ($d -and ((& dotnet --list-sdks 2>$null) | Where-Object { $_ -match '^\d+\.' }))
+            }
+            return $false   # no verifier written - do not claim success
+        }
+    }
+}
+
 function Install-MissingTools {
-    if (-not $script:Optional -or $script:Optional.Count -eq 0) {
+    if (-not $script:Missing -or $script:Missing.Count -eq 0) {
         Write-Ok 'Nothing missing.'
         return
     }
 
-    foreach ($t in $script:Optional) {
-        if ($WhatIfOnly) { Write-Info "would install $($t.Name) via $($t.Kind)"; continue }
+    # winget before npm: npm does not exist until Node is installed.
+    $ordered = @($script:Missing | Where-Object { $_.Kind -eq 'winget' }) +
+               @($script:Missing | Where-Object { $_.Kind -ne 'winget' })
+
+    foreach ($t in $ordered) {
+        if ($WhatIfOnly) { Write-Info "would install $($t.Name) ($($t.Id)) via $($t.Kind)"; continue }
 
         Write-Info "installing $($t.Name)..."
         if ($t.Kind -eq 'winget') {
             & winget install --id $t.Id --source winget `
                 --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+            # Pick up PATH entries the installer just wrote, so the next tool in the
+            # list (and the npm stage below) can actually see it.
+            Update-SessionPath
         } else {
+            if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+                Write-Bad "$($t.Name) - npm not available (Node.js install may need a new terminal)"
+                continue
+            }
             & npm install -g $t.Id 2>&1 | Out-Null
+            Update-SessionPath
         }
 
-        # Re-resolve rather than trusting the exit code - winget returns 0 for
-        # "already installed" and for some partial states.
-        $ok = switch ($t.Name) {
-            'Claude Code CLI' { [bool]($script:ClaudeCli = Resolve-ClaudeCli) }
-            'GitHub CLI'      { [bool](Resolve-GhCli) }
-            'Python 3'        { [bool](Resolve-RealPython) }
-            default           { $false }   # no verifier written - do not claim success
+        if (Test-ToolPresent -Name $t.Name) {
+            Write-Ok "$($t.Name)"
+        } elseif ($t.Required) {
+            Write-Bad "$($t.Name) - REQUIRED and not usable after install"
+        } else {
+            Write-Warn "$($t.Name) - not usable yet; a new terminal may be needed"
         }
-        if ($ok) { Write-Ok "$($t.Name)" } else { Write-Bad "$($t.Name) - could not verify a usable binary after install" }
     }
-
-    Write-Info 'Newly installed tools may need a new terminal before they are on PATH.'
 }
 
 # ---------------------------------------------------------------------------
@@ -774,6 +837,10 @@ if ($InstallTools) {
     Write-Step 'Installing missing tools'
     Install-MissingTools
 }
+
+# Deferred until after the install attempt, so -Full can fix a clean machine rather
+# than refusing to start on one.
+if (-not $WhatIfOnly) { Assert-RequiredTools }
 
 if (-not (Test-Path -LiteralPath $ClaudeDir)) {
     if (-not $WhatIfOnly) { New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null }
